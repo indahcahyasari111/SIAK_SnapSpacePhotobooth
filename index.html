@@ -1,0 +1,938 @@
+<!DOCTYPE html>
+<html lang="id">
+
+<head>
+  <meta charset="UTF-8">
+
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+  >
+
+  <title>SnapSpace Photobooth</title>
+
+  <link
+    rel="stylesheet"
+    href="style.css"
+  >
+</head>
+
+<body>
+
+  <!-- ================= NAVBAR ================= -->
+
+  <header class="navbar">
+
+    <div class="brand">
+
+      <div class="brand-mark">
+        S
+      </div>
+
+      <div>
+        <strong>
+          SnapSpace
+        </strong>
+
+        <span>
+          Photobooth
+        </span>
+      </div>
+
+    </div>
+
+    <button
+      class="nav-report"
+      id="navReportBtn"
+    >
+      Laporan Kas
+    </button>
+
+  </header>
+
+
+  <main>
+
+    <!-- ================= HOME ================= -->
+
+    <section
+      class="page active"
+      id="homePage"
+    >
+
+      <div class="hero">
+
+        <div class="hero-copy">
+
+          <span class="eyebrow">
+            CAPTURE THE MOMENT
+          </span>
+
+          <h1>
+            Your moment,
+            <br>
+            <span>
+              your little memory.
+            </span>
+          </h1>
+
+          <p>
+            Reservasi photobooth dengan proses simpel.
+            Pilih paket, tentukan waktu dan outlet,
+            lalu bayar dengan QRIS atau M-Banking.
+          </p>
+
+          <button
+            class="primary-btn"
+            id="startBookingBtn"
+          >
+            Start Booking →
+          </button>
+
+        </div>
+
+
+        <div class="hero-card">
+
+          <div class="camera-icon">
+            ✦
+          </div>
+
+          <div class="hero-card-label">
+            PHOTOBOOTH
+          </div>
+
+          <div class="hero-card-title">
+            Make it a
+            <br>
+            moment.
+          </div>
+
+          <div class="hero-card-bottom">
+            <span>
+              15–20 MIN
+            </span>
+
+            <span>
+              4 CITIES
+            </span>
+          </div>
+
+        </div>
+
+      </div>
+
+
+      <div class="home-info">
+
+        <div>
+
+          <span class="small-label">
+            OUR OUTLETS
+          </span>
+
+          <h2>
+            Find us around Java.
+          </h2>
+
+        </div>
+
+
+        <div class="city-list">
+
+          <span>
+            Semarang
+          </span>
+
+          <span>
+            Surabaya
+          </span>
+
+          <span>
+            Malang
+          </span>
+
+          <span>
+            Yogyakarta
+          </span>
+
+        </div>
+
+      </div>
+
+    </section>
+
+
+    <!-- ================= BOOKING ================= -->
+
+    <section
+      class="page"
+      id="bookingPage"
+    >
+
+      <div class="section-heading">
+
+        <div>
+
+          <span class="eyebrow">
+            NEW RESERVATION
+          </span>
+
+          <h1>
+            Book your session.
+          </h1>
+
+          <p>
+            Isi data di bawah ini untuk membuat
+            reservasi photobooth.
+          </p>
+
+        </div>
+
+        <button
+          class="text-btn"
+          id="backHomeBtn"
+        >
+          ← Home
+        </button>
+
+      </div>
+
+
+      <form id="bookingForm">
+
+        <div class="form-layout">
+
+          <div class="form-main">
+
+
+            <!-- DATA PELANGGAN -->
+
+            <div class="form-card">
+
+              <div class="step-title">
+                <span>
+                  01
+                </span>
+
+                Data Pelanggan
+              </div>
+
+
+              <div class="field-grid">
+
+                <label>
+
+                  Nama Lengkap
+
+                  <input
+                    type="text"
+                    id="name"
+                    placeholder="Nama kamu"
+                    required
+                  >
+
+                </label>
+
+
+                <label>
+
+                  Nomor HP
+
+                  <input
+                    type="tel"
+                    id="phone"
+                    placeholder="08xxxxxxxxxx"
+                    required
+                  >
+
+                </label>
+
+
+                <label>
+
+                  Email
+
+                  <input
+                    type="email"
+                    id="email"
+                    placeholder="nama@email.com"
+                    required
+                  >
+
+                </label>
+
+
+                <label>
+
+                  Alamat
+
+                  <input
+                    type="text"
+                    id="address"
+                    placeholder="Opsional"
+                  >
+
+                </label>
+
+              </div>
+
+            </div>
+
+
+            <!-- PAKET -->
+
+            <div class="form-card">
+
+              <div class="step-title">
+
+                <span>
+                  02
+                </span>
+
+                Pilih Paket
+
+              </div>
+
+
+              <div
+                id="packageList"
+                class="package-list"
+              >
+
+                <div class="loading">
+                  Memuat paket...
+                </div>
+
+              </div>
+
+            </div>
+
+
+            <!-- JADWAL -->
+
+            <div class="form-card">
+
+              <div class="step-title">
+
+                <span>
+                  03
+                </span>
+
+                Jadwal & Outlet
+
+              </div>
+
+
+              <div class="field-grid">
+
+                <label>
+
+                  Tanggal Reservasi
+
+                  <input
+                    type="date"
+                    id="date"
+                    required
+                  >
+
+                </label>
+
+
+                <label>
+
+                  Jam Reservasi
+
+                  <input
+                    type="time"
+                    id="time"
+                    step="60"
+                    required
+                  >
+
+                  <small>
+                    Pilih atau ketik jam mulai.
+                    Durasi otomatis mengikuti paket.
+                  </small>
+
+                </label>
+
+
+                <label class="full">
+
+                  Outlet
+
+                  <select
+                    id="outlet"
+                    required
+                  >
+
+                    <option value="">
+                      Pilih outlet
+                    </option>
+
+                  </select>
+
+                </label>
+
+              </div>
+
+
+              <div
+                class="availability-box"
+                id="availabilityBox"
+              >
+                Pilih tanggal dan outlet
+                untuk mengecek jadwal.
+              </div>
+
+            </div>
+
+
+            <!-- PEMBAYARAN -->
+
+            <div class="form-card">
+
+              <div class="step-title">
+
+                <span>
+                  04
+                </span>
+
+                Pembayaran
+
+              </div>
+
+
+              <div class="payment-options">
+
+
+                <label class="payment-option">
+
+                  <input
+                    type="radio"
+                    name="payment"
+                    value="QRIS"
+                    required
+                  >
+
+                  <div>
+
+                    <strong>
+                      QRIS
+                    </strong>
+
+                    <span>
+                      Scan QR untuk pembayaran
+                    </span>
+
+                  </div>
+
+                </label>
+
+
+                <label class="payment-option">
+
+                  <input
+                    type="radio"
+                    name="payment"
+                    value="M-BANKING"
+                  >
+
+                  <div>
+
+                    <strong>
+                      M-Banking
+                    </strong>
+
+                    <span>
+                      Transfer melalui mobile banking
+                    </span>
+
+                  </div>
+
+                </label>
+
+
+              </div>
+
+            </div>
+
+
+            <button
+              class="primary-btn submit-btn"
+              type="submit"
+            >
+              Confirm Booking →
+            </button>
+
+
+          </div>
+
+
+          <!-- SUMMARY -->
+
+          <aside class="booking-summary">
+
+            <div class="summary-sticky">
+
+              <span class="small-label">
+                BOOKING SUMMARY
+              </span>
+
+              <h2 id="summaryPackage">
+                Pilih paket
+              </h2>
+
+
+              <div class="summary-line">
+
+                <span>
+                  Durasi
+                </span>
+
+                <strong id="summaryDuration">
+                  —
+                </strong>
+
+              </div>
+
+
+              <div class="summary-line">
+
+                <span>
+                  Tanggal
+                </span>
+
+                <strong id="summaryDate">
+                  —
+                </strong>
+
+              </div>
+
+
+              <div class="summary-line">
+
+                <span>
+                  Jam
+                </span>
+
+                <strong id="summaryTime">
+                  —
+                </strong>
+
+              </div>
+
+
+              <div class="summary-line">
+
+                <span>
+                  Outlet
+                </span>
+
+                <strong id="summaryOutlet">
+                  —
+                </strong>
+
+              </div>
+
+
+              <div class="summary-total">
+
+                <span>
+                  Total
+                </span>
+
+                <strong id="summaryPrice">
+                  Rp0
+                </strong>
+
+              </div>
+
+            </div>
+
+          </aside>
+
+        </div>
+
+      </form>
+
+    </section>
+
+
+    <!-- ================= SUCCESS ================= -->
+
+    <section
+      class="page"
+      id="successPage"
+    >
+
+      <div class="success-card">
+
+        <div class="success-icon">
+          ✓
+        </div>
+
+        <span class="eyebrow">
+          BOOKING CONFIRMED
+        </span>
+
+        <h1>
+          Your moment is booked.
+        </h1>
+
+        <p>
+          Data reservasi dan penerimaan pembayaran
+          sudah tersimpan.
+        </p>
+
+
+        <div class="booking-code-box">
+
+          <span>
+            KODE BOOKING
+          </span>
+
+          <strong id="successCode">
+            -
+          </strong>
+
+        </div>
+
+
+        <div class="confirmation-grid">
+
+          <div>
+
+            <span>
+              Nama
+            </span>
+
+            <strong id="successName">
+              -
+            </strong>
+
+          </div>
+
+
+          <div>
+
+            <span>
+              Paket
+            </span>
+
+            <strong id="successPackage">
+              -
+            </strong>
+
+          </div>
+
+
+          <div>
+
+            <span>
+              Tanggal
+            </span>
+
+            <strong id="successDate">
+              -
+            </strong>
+
+          </div>
+
+
+          <div>
+
+            <span>
+              Jam
+            </span>
+
+            <strong id="successTime">
+              -
+            </strong>
+
+          </div>
+
+
+          <div>
+
+            <span>
+              Outlet
+            </span>
+
+            <strong id="successOutlet">
+              -
+            </strong>
+
+          </div>
+
+
+          <div>
+
+            <span>
+              Pembayaran
+            </span>
+
+            <strong id="successPayment">
+              -
+            </strong>
+
+          </div>
+
+
+          <div class="wide">
+
+            <span>
+              Total Dibayar
+            </span>
+
+            <strong id="successAmount">
+              -
+            </strong>
+
+          </div>
+
+        </div>
+
+
+        <div class="success-actions">
+
+          <button
+            class="primary-btn"
+            id="successReportBtn"
+          >
+            Lihat Laporan Kas
+          </button>
+
+          <button
+            class="secondary-btn"
+            id="newBookingBtn"
+          >
+            Booking Lagi
+          </button>
+
+        </div>
+
+      </div>
+
+    </section>
+
+
+    <!-- ================= REPORT ================= -->
+
+    <section
+      class="page"
+      id="reportPage"
+    >
+
+      <div class="section-heading">
+
+        <div>
+
+          <span class="eyebrow">
+            ACCOUNTING REPORT
+          </span>
+
+          <h1>
+            Penerimaan Kas
+          </h1>
+
+          <p>
+            Data di bawah diambil langsung
+            dari database Supabase.
+          </p>
+
+        </div>
+
+
+        <div class="heading-actions">
+
+          <button
+            class="secondary-btn"
+            id="refreshReportBtn"
+          >
+            ↻ Refresh
+          </button>
+
+          <button
+            class="primary-btn"
+            id="printReportBtn"
+          >
+            Print
+          </button>
+
+        </div>
+
+      </div>
+
+
+      <!-- REPORT SUMMARY -->
+
+      <div class="report-cards">
+
+        <div class="report-card">
+
+          <span>
+            Total Transaksi
+          </span>
+
+          <strong id="totalTransactions">
+            0
+          </strong>
+
+        </div>
+
+
+        <div class="report-card">
+
+          <span>
+            Total Penerimaan
+          </span>
+
+          <strong id="totalCash">
+            Rp0
+          </strong>
+
+        </div>
+
+
+        <div class="report-card">
+
+          <span>
+            Penerimaan QRIS
+          </span>
+
+          <strong id="totalQRIS">
+            Rp0
+          </strong>
+
+        </div>
+
+
+        <div class="report-card">
+
+          <span>
+            Penerimaan M-Banking
+          </span>
+
+          <strong id="totalMBanking">
+            Rp0
+          </strong>
+
+        </div>
+
+      </div>
+
+
+      <!-- TABLE -->
+
+      <div class="table-card">
+
+        <div class="table-head">
+
+          <div>
+
+            <span class="small-label">
+              TRANSACTION DETAIL
+            </span>
+
+            <h2>
+              Daftar Penerimaan
+            </h2>
+
+          </div>
+
+          <span
+            id="reportStatus"
+            class="status-text"
+          >
+          </span>
+
+        </div>
+
+
+        <div class="table-wrap">
+
+          <table>
+
+            <thead>
+
+              <tr>
+
+                <th>
+                  No. Bukti
+                </th>
+
+                <th>
+                  Tanggal Bayar
+                </th>
+
+                <th>
+                  Pelanggan
+                </th>
+
+                <th>
+                  Paket
+                </th>
+
+                <th>
+                  Reservasi
+                </th>
+
+                <th>
+                  Outlet
+                </th>
+
+                <th>
+                  Metode
+                </th>
+
+                <th>
+                  Jumlah
+                </th>
+
+              </tr>
+
+            </thead>
+
+
+            <tbody id="reportTableBody">
+
+              <tr>
+
+                <td
+                  colspan="8"
+                  class="empty-table"
+                >
+                  Belum ada transaksi.
+                </td>
+
+              </tr>
+
+            </tbody>
+
+          </table>
+
+        </div>
+
+      </div>
+
+    </section>
+
+  </main>
+
+
+  <!-- TOAST -->
+
+  <div
+    class="toast"
+    id="toast"
+  >
+  </div>
+
+
+  <script src="script.js"></script>
+
+</body>
+
+</html>
