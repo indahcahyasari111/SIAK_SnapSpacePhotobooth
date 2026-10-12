@@ -980,9 +980,7 @@ function serveStaticFile(
 // SERVER
 // ======================================================
 
-const server =
-  http.createServer(
-    async (req, res) => {
+async function handler(req, res) {
 
       try {
 
@@ -1329,41 +1327,6 @@ const server =
         );
       }
     }
-  );
+  
 
-// ======================================================
-// START SERVER
-// ======================================================
-
-server.listen(
-  PORT,
-  () => {
-
-    console.log('');
-    console.log(
-      '=========================================='
-    );
-
-    console.log(
-      '      SIA PHOTOBOOTH - SERVER AKTIF'
-    );
-
-    console.log(
-      '=========================================='
-    );
-
-    console.log(
-      `Buka: http://localhost:${PORT}`
-    );
-
-    console.log(
-      'Tekan CTRL + C untuk menghentikan server.'
-    );
-
-    console.log(
-      '=========================================='
-    );
-
-    console.log('');
-  }
-);
+module.exports = handler;
