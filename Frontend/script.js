@@ -140,6 +140,119 @@ function showToast(message) {
 }
 
 // ======================================================
+// KOTAK INSTRUKSI PEMBAYARAN (QRIS & M-BANKING)
+// ======================================================
+
+function getOrCreatePaymentInfoBox() {
+  let box = $('paymentInfoBox');
+  if (box) return box;
+
+  const submitBtn = document.querySelector('.submit-btn');
+  if (!submitBtn || !submitBtn.parentElement) return null;
+
+  box = document.createElement('div');
+  box.id = 'paymentInfoBox';
+  box.style.cssText = `
+    display: none;
+    margin: 16px 0 20px;
+    padding: 18px;
+    border-radius: 14px;
+    border: 1px solid #e5e5e5;
+    background: #fafafa;
+    font-size: 14px;
+    line-height: 1.5;
+  `;
+
+  submitBtn.parentElement.insertBefore(box, submitBtn);
+  return box;
+}
+
+function updatePaymentInstruction() {
+  const box = getOrCreatePaymentInfoBox();
+  if (!box) return;
+
+  const selected = document.querySelector('input[name="payment"]:checked');
+  if (!selected) {
+    box.style.display = 'none';
+    box.innerHTML = '';
+    return;
+  }
+
+  const pkg = state.selectedPackage;
+  const amountText = pkg ? formatRupiah(pkg.harga) : 'Pilih paket terlebih dahulu';
+  const method = selected.value;
+
+  box.style.display = 'block';
+
+  if (method === 'QRIS') {
+    const qrData = encodeURIComponent(
+      `SNAPSPACE-PHOTOBOOTH|QRIS|TOTAL:${pkg ? pkg.harga : 0}`
+    );
+    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${qrData}`;
+
+    box.innerHTML = `
+      <div style="text-align: center;">
+        <div style="font-weight: 700; font-size: 15px; margin-bottom: 4px;">
+          Pembayaran QRIS — SnapSpace Photobooth
+        </div>
+        <div style="color: #666; font-size: 13px; margin-bottom: 12px;">
+          Scan QR code di bawah ini menggunakan GoPay, OVO, DANA, ShopeePay, atau M-Banking.
+        </div>
+        <div style="display: inline-block; padding: 10px; background: #fff; border: 1px solid #e0e0e0; border-radius: 12px; margin-bottom: 10px;">
+          <img src="${qrUrl}" alt="QRIS SnapSpace Photobooth" width="170" height="170" style="display: block;" />
+        </div>
+        <div style="font-size: 14px; margin-top: 4px;">
+          Total Bayar: <strong>${amountText}</strong>
+        </div>
+        <div style="font-size: 12px; color: #777; margin-top: 6px;">
+          *Simulasi pembayaran. Setelah scan, klik <strong>Confirm Booking</strong> untuk menyelesaikan transaksi.
+        </div>
+      </div>
+    `;
+  } else if (method === 'M-BANKING') {
+    box.innerHTML = `
+      <div>
+        <div style="font-weight: 700; font-size: 15px; margin-bottom: 6px;">
+          Transfer M-Banking — Bank BCA (Simulasi)
+        </div>
+        <div style="background: #fff; border: 1px solid #e5e5e5; border-radius: 10px; padding: 12px 14px; margin: 10px 0;">
+          <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap;">
+            <div>
+              <div style="font-size: 12px; color: #666;">Nomor Rekening</div>
+              <div style="font-size: 18px; font-weight: 700; letter-spacing: 0.5px;">1234-5678-90</div>
+              <div style="font-size: 13px; color: #444;">a.n. SnapSpace Photobooth</div>
+            </div>
+            <button
+              type="button"
+              id="copyRekBtn"
+              style="padding: 8px 12px; border-radius: 8px; border: 1px solid #111; background: #111; color: #fff; font-size: 12px; cursor: pointer;"
+            >
+              Salin No. Rek
+            </button>
+          </div>
+          <hr style="border: none; border-top: 1px solid #eee; margin: 10px 0;" />
+          <div style="display: flex; justify-content: space-between; font-size: 14px;">
+            <span style="color: #666;">Total Transfer</span>
+            <strong>${amountText}</strong>
+          </div>
+        </div>
+        <div style="font-size: 12px; color: #777;">
+          *Simulasi pembayaran. Setelah transfer sesuai nominal, klik <strong>Confirm Booking</strong> untuk konfirmasi.
+        </div>
+      </div>
+    `;
+
+    const copyBtn = $('copyRekBtn');
+    if (copyBtn) {
+      copyBtn.addEventListener('click', () => {
+        navigator.clipboard?.writeText('1234567890');
+        showToast('Nomor rekening 1234-5678-90 berhasil disalin.');
+      });
+    }
+  }
+}
+
+// ======================================================
 // SUPABASE DIRECT REQUEST (TANPA SERVER BACKEND)
 // ======================================================
 
@@ -241,6 +354,7 @@ function renderPackages() {
       );
       renderPackages();
       updateSummary();
+      updatePaymentInstruction();
       checkAvailability();
     });
   });
@@ -409,7 +523,7 @@ async function submitBooking(event) {
 
   const submitButton = document.querySelector('.submit-btn');
   submitButton.disabled = true;
-  submitButton.textContent = 'Saving...';
+  submitButton.textContent = 'Memproses Pembayaran...';
 
   let createdBooking = null;
 
@@ -532,9 +646,8 @@ async function submitBooking(event) {
     state.lastBooking = resultData;
     fillSuccess(resultData);
     showPage(pages.success);
-    showToast('Booking berhasil disimpan ke database.');
+    showToast('Pembayaran berhasil & booking tersimpan ke database.');
   } catch (error) {
-    // Rollback penyewaan jika penerimaan kas gagal
     if (createdBooking?.id_penyewaan) {
       try {
         await supabaseRequest(
@@ -564,7 +677,9 @@ function fillSuccess(data) {
   $('successTime').textContent = `${data.schedule.start} – ${data.schedule.end}`;
   $('successOutlet').textContent = data.booking.outlet;
   $('successPayment').textContent =
-    data.payment.method === 'M-BANKING' ? 'M-Banking' : 'QRIS';
+    data.payment.method === 'M-BANKING'
+      ? 'M-Banking — LUNAS ✓'
+      : 'QRIS — LUNAS ✓';
   $('successAmount').textContent = formatRupiah(data.payment.amount);
 }
 
@@ -573,6 +688,7 @@ function resetBookingForm() {
   state.selectedPackage = null;
   renderPackages();
   updateSummary();
+  updatePaymentInstruction();
   $('availabilityBox').className = 'availability-box';
   $('availabilityBox').textContent =
     'Pilih tanggal dan outlet untuk mengecek jadwal.';
@@ -591,7 +707,7 @@ async function openOwnerReport() {
       'Khusus Pemilik SnapSpace\nMasukkan password untuk membuka Laporan Penerimaan Kas:'
     );
 
-    if (input === null) return; // Pengguna klik Cancel
+    if (input === null) return;
 
     if (input !== OWNER_PASSWORD) {
       showToast('Password salah. Akses Laporan Kas khusus pemilik.');
@@ -691,6 +807,7 @@ function renderReportTable(rows) {
 
 $('startBookingBtn').addEventListener('click', async () => {
   showPage(pages.booking);
+  updatePaymentInstruction();
   try {
     await Promise.all([loadPackages(), loadOutlets()]);
   } catch (error) {
@@ -721,6 +838,10 @@ $('outlet').addEventListener('change', () => {
   checkAvailability();
 });
 
+document.querySelectorAll('input[name="payment"]').forEach((radio) => {
+  radio.addEventListener('change', updatePaymentInstruction);
+});
+
 if ($('successReportBtn')) {
   $('successReportBtn').addEventListener('click', openOwnerReport);
 }
@@ -746,3 +867,4 @@ $('printReportBtn').addEventListener('click', () => {
 // ======================================================
 
 setMinimumDate();
+updatePaymentInstruction();
