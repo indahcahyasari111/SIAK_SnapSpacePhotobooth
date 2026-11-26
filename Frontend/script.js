@@ -5,7 +5,7 @@
 const SUPABASE_URL = 'https://lbtiszzodnopmivcfqkd.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_rRTNMxJmclKV5ey52bcM6Q_CBzccWpe';
 
-// PASSWORD PEMILIK UNTUK AKSES VERIFIKASI & LAPORAN KAS
+// PASSWORD PEMILIK UNTUK AKSES PORTAL OWNER
 const OWNER_PASSWORD = 'snapspace2026';
 
 const OUTLETS = [
@@ -42,12 +42,38 @@ const pages = {
   home: $('homePage'),
   booking: $('bookingPage'),
   success: $('successPage'),
-  report: $('reportPage')
+  report: $('reportPage'),
+  ownerLogin: null
 };
 
+function isOwnerLoggedIn() {
+  return sessionStorage.getItem('snapspace_owner_auth') === 'true';
+}
+
+function syncOwnerVisibility() {
+  const loggedIn = isOwnerLoggedIn();
+
+  // Sembunyikan tombol Laporan Kas dari pelanggan biasa
+  if ($('navReportBtn')) {
+    $('navReportBtn').style.display = loggedIn ? '' : 'none';
+    if (loggedIn) {
+      $('navReportBtn').textContent = 'Dashboard Pemilik';
+    }
+  }
+
+  // Pelanggan tidak perlu melihat tombol Laporan Kas di halaman Success
+  if ($('successReportBtn')) {
+    $('successReportBtn').style.display = loggedIn ? '' : 'none';
+  }
+}
+
 function showPage(page) {
-  Object.values(pages).forEach((p) => p.classList.remove('active'));
-  page.classList.add('active');
+  Object.values(pages).forEach((p) => {
+    if (p) p.classList.remove('active');
+  });
+  if (page) {
+    page.classList.add('active');
+  }
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
@@ -140,7 +166,6 @@ function showToast(message) {
   }, 3500);
 }
 
-// Helper format & parse catatan verifikasi pembayaran
 function encodePaymentNote(method, sender, ref) {
   const cleanSender = sender.replaceAll('|', '/').slice(0, 60);
   const cleanRef = ref.replaceAll('|', '/').slice(0, 60);
@@ -166,6 +191,160 @@ function parsePaymentNote(note) {
   });
 
   return result;
+}
+
+// ======================================================
+// HALAMAN LOGIN PEMILIK (TERPISAH DARI PELANGGAN)
+// ======================================================
+
+function createOwnerLoginPage() {
+  if ($('ownerLoginPage')) {
+    pages.ownerLogin = $('ownerLoginPage');
+    return;
+  }
+
+  const mainEl = pages.home?.parentElement || document.querySelector('main');
+  if (!mainEl) return;
+
+  const baseClass = (pages.home?.className || 'page')
+    .replace(/\bactive\b/g, '')
+    .trim();
+
+  const section = document.createElement('section');
+  section.id = 'ownerLoginPage';
+  section.className = baseClass || 'page';
+
+  section.innerHTML = `
+    <div style="max-width: 440px; margin: 48px auto; background: #ffffff; border: 1px solid #e8e2d9; border-radius: 22px; padding: 32px; box-shadow: 0 8px 30px rgba(0, 0, 0, 0.04);">
+      <div style="font-size: 11px; font-weight: 700; letter-spacing: 1.2px; color: #c25e3e; text-transform: uppercase; margin-bottom: 6px;">
+        OWNER PORTAL
+      </div>
+      <h1 style="margin: 0 0 8px; font-size: 26px;">
+        Login Pemilik
+      </h1>
+      <p style="margin: 0 0 22px; font-size: 14px; color: #666; line-height: 1.5;">
+        Halaman khusus pengelola SnapSpace Photobooth untuk verifikasi pembayaran dan memantau Laporan Penerimaan Kas.
+      </p>
+
+      <form id="ownerLoginForm">
+        <div style="margin-bottom: 16px;">
+          <label for="ownerPasswordInput" style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px;">
+            Password Pemilik
+          </label>
+          <input
+            type="password"
+            id="ownerPasswordInput"
+            placeholder="Masukkan password pemilik"
+            required
+            style="width: 100%; padding: 12px 14px; border: 1px solid #d4d4d4; border-radius: 10px; font-size: 14px; box-sizing: border-box;"
+          />
+        </div>
+
+        <button
+          type="submit"
+          style="width: 100%; padding: 12px 16px; border-radius: 10px; border: none; background: #111; color: #fff; font-size: 14px; font-weight: 600; cursor: pointer; margin-bottom: 10px;"
+        >
+          Masuk Dashboard Pemilik →
+        </button>
+
+        <button
+          type="button"
+          id="ownerLoginBackBtn"
+          style="width: 100%; padding: 11px 16px; border-radius: 10px; border: 1px solid #d4d4d4; background: #fff; color: #333; font-size: 13px; font-weight: 600; cursor: pointer;"
+        >
+          ← Kembali ke Halaman Sewa
+        </button>
+      </form>
+    </div>
+  `;
+
+  mainEl.appendChild(section);
+  pages.ownerLogin = section;
+
+  $('ownerLoginForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const input = $('ownerPasswordInput').value;
+
+    if (input !== OWNER_PASSWORD) {
+      showToast('Password salah. Akses khusus pemilik.');
+      $('ownerPasswordInput').value = '';
+      $('ownerPasswordInput').focus();
+      return;
+    }
+
+    sessionStorage.setItem('snapspace_owner_auth', 'true');
+    $('ownerPasswordInput').value = '';
+    syncOwnerVisibility();
+    showToast('Login pemilik berhasil.');
+    showPage(pages.report);
+    await loadReport();
+  });
+
+  $('ownerLoginBackBtn').addEventListener('click', () => {
+    showPage(pages.home);
+  });
+}
+
+function setupReportNavigationButtons() {
+  const refreshBtn = $('refreshReportBtn');
+  if (!refreshBtn || $('backToBookingFromReportBtn')) return;
+
+  const btnContainer = refreshBtn.parentElement;
+  if (!btnContainer) return;
+
+  const backBtn = document.createElement('button');
+  backBtn.type = 'button';
+  backBtn.id = 'backToBookingFromReportBtn';
+  backBtn.textContent = '← Ke Halaman Sewa';
+  backBtn.style.cssText = `
+    padding: 10px 14px;
+    border-radius: 10px;
+    border: 1px solid #d4d4d4;
+    background: #fff;
+    color: #111;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+  `;
+
+  backBtn.addEventListener('click', async () => {
+    showPage(pages.booking);
+    updatePaymentInstruction();
+    try {
+      await Promise.all([loadPackages(), loadOutlets()]);
+    } catch (error) {
+      showToast(error.message);
+    }
+  });
+
+  const logoutBtn = document.createElement('button');
+  logoutBtn.type = 'button';
+  logoutBtn.id = 'ownerLogoutBtn';
+  logoutBtn.textContent = 'Logout Pemilik';
+  logoutBtn.style.cssText = `
+    padding: 10px 14px;
+    border-radius: 10px;
+    border: 1px solid #dc2626;
+    background: #fff;
+    color: #dc2626;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+  `;
+
+  logoutBtn.addEventListener('click', () => {
+    sessionStorage.removeItem('snapspace_owner_auth');
+    syncOwnerVisibility();
+    // Bersihkan parameter ?mode=owner dari URL
+    if (window.location.search.includes('owner') || window.location.hash === '#owner') {
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+    showPage(pages.home);
+    showToast('Anda telah keluar dari mode pemilik.');
+  });
+
+  btnContainer.insertBefore(backBtn, refreshBtn);
+  btnContainer.appendChild(logoutBtn);
 }
 
 // ======================================================
@@ -207,7 +386,6 @@ function updatePaymentInstruction() {
     return;
   }
 
-  // Simpan nilai input jika pelanggan ganti paket setelah mengetik
   const prevSender = $('payerName')?.value || '';
   const prevRef = $('paymentRef')?.value || '';
   const prevChecked = $('paymentConfirmedCheck')?.checked || false;
@@ -273,14 +451,13 @@ function updatePaymentInstruction() {
     `;
   }
 
-  // Form Konfirmasi Bukti Pembayaran untuk diverifikasi Pemilik
   const verificationFormHtml = `
     <div style="background: #fff; border: 1px solid #e5e5e5; border-radius: 12px; padding: 14px;">
       <div style="font-weight: 700; font-size: 14px; margin-bottom: 4px;">
         Konfirmasi Bukti Pembayaran
       </div>
       <div style="font-size: 12px; color: #666; margin-bottom: 12px;">
-        Setelah membayar, isi detail transaksi di bawah ini agar pemilik dapat memverifikasi dana masuk sebelum dicatat di Laporan Kas.
+        Salin Nama Pengirim dan No. Referensi dari struk transfer M-Banking atau riwayat transaksi QRIS Anda agar pemilik dapat memverifikasi dana masuk.
       </div>
 
       <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-bottom: 12px;">
@@ -488,7 +665,7 @@ function updateSummary() {
 }
 
 // ======================================================
-// CEK KETERSEDIAAN JADWAL (HOLD SLOT UNTUK PENDING & BOOKED)
+// CEK KETERSEDIAAN JADWAL
 // ======================================================
 
 async function getBookedReservations(date, outlet) {
@@ -634,7 +811,6 @@ async function submitBooking(event) {
       throw new Error(`Jam ${time} terlalu malam untuk paket ini.`);
     }
 
-    // 1. Cek bentrok jadwal
     const existingBookings = await getBookedReservations(date, outlet);
     const hasConflict = existingBookings.some((b) => {
       const existingStart = timeToMinutes(b.start);
@@ -648,7 +824,6 @@ async function submitBooking(event) {
       );
     }
 
-    // 2. Simpan / Update Pelanggan
     const existingCustomers = await supabaseRequest(
       `pelanggan?email=eq.${encodeURIComponent(email)}&select=*`
     );
@@ -685,7 +860,6 @@ async function submitBooking(event) {
       throw new Error('Data pelanggan gagal disimpan.');
     }
 
-    // 3. Simpan Penyewaan dengan status PENDING (BELUM masuk ke penerimaan_kas!)
     const bookingCode = generateBookingCode();
     const paymentNote = encodePaymentNote(paymentMethod, payerName, paymentRef);
 
@@ -708,7 +882,6 @@ async function submitBooking(event) {
         body: JSON.stringify(payloadPenyewaan)
       });
     } catch (err) {
-      // Fallback jika database punya constraint hanya menerima 'BOOKED'
       if (String(err.message).toLowerCase().includes('constraint')) {
         payloadPenyewaan.status_booking = 'BOOKED';
         bookingResult = await supabaseRequest('penyewaan', {
@@ -759,7 +932,6 @@ async function submitBooking(event) {
 // ======================================================
 
 function fillSuccess(data) {
-  // Perbarui teks keterangan di halaman success agar sesuai alur SIA
   const heading = pages.success.querySelector('h1');
   const subtitle = pages.success.querySelector('p');
   if (heading) heading.textContent = 'Menunggu Verifikasi Pembayaran.';
@@ -795,7 +967,7 @@ function resetBookingForm() {
 }
 
 // ======================================================
-// PANEL VERIFIKASI PEMILIK (DI HALAMAN LAPORAN KAS)
+// PANEL VERIFIKASI PEMILIK (FIX FILTER 1-TO-1 SUPABASE)
 // ======================================================
 
 function getOrCreatePendingSection() {
@@ -846,7 +1018,7 @@ function getOrCreatePendingSection() {
   return section;
 }
 
-async function loadPendingVerifications() {
+async function loadPendingVerifications(paidBookingIdSet) {
   getOrCreatePendingSection();
   const container = $('pendingListContainer');
   const badge = $('pendingCountBadge');
@@ -856,20 +1028,18 @@ async function loadPendingVerifications() {
       `penyewaan?` +
       `select=id_penyewaan,kode_booking,tanggal_reservasi,jam_reservasi,outlet,total_harga,status_booking,catatan,` +
       `paket(nama_paket,durasi_menit),` +
-      `pelanggan(nama_pelanggan,email,no_hp),` +
-      `penerimaan_kas(id_penerimaan)` +
+      `pelanggan(nama_pelanggan,email,no_hp)` +
       `&order=id_penyewaan.desc`;
 
     const rows = (await supabaseRequest(endpoint)) || [];
 
-    // Hanya tampilkan booking yang BELUM punya penerimaan_kas dan belum dibatalkan
+    // Filter akurat: cek langsung terhadap Set id_penyewaan yg sudah ada di penerimaan_kas
     const pending = rows.filter((row) => {
-      const hasReceipt =
-        Array.isArray(row.penerimaan_kas) && row.penerimaan_kas.length > 0;
+      const alreadyPaid = paidBookingIdSet.has(Number(row.id_penyewaan));
       const isCancelled =
         row.status_booking === 'CANCELLED' ||
         (row.catatan || '').startsWith('[DITOLAK]');
-      return !hasReceipt && !isCancelled;
+      return !alreadyPaid && !isCancelled;
     });
 
     state.pendingList = pending;
@@ -934,7 +1104,6 @@ async function loadPendingVerifications() {
       })
       .join('');
 
-    // Pasang event tombol Terima & Tolak
     container.querySelectorAll('[data-approve-id]').forEach((btn) => {
       btn.addEventListener('click', () =>
         approvePayment(Number(btn.dataset.approveId), btn)
@@ -952,7 +1121,9 @@ async function loadPendingVerifications() {
 }
 
 async function approvePayment(idPenyewaan, button) {
-  const row = state.pendingList.find((item) => item.id_penyewaan === idPenyewaan);
+  const row = state.pendingList.find(
+    (item) => Number(item.id_penyewaan) === Number(idPenyewaan)
+  );
   if (!row) return;
 
   const pay = parsePaymentNote(row.catatan);
@@ -971,19 +1142,24 @@ async function approvePayment(idPenyewaan, button) {
   button.textContent = 'Memproses...';
 
   try {
-    // 1. Catat ke tabel penerimaan_kas (Kas benar-benar diterima)
-    await supabaseRequest('penerimaan_kas', {
-      method: 'POST',
-      body: JSON.stringify({
-        no_bukti: generateReceiptNumber(),
-        id_penyewaan: row.id_penyewaan,
-        metode_pembayaran: pay.method,
-        jumlah_diterima: row.total_harga,
-        keterangan: `Terverifikasi (${pay.sender} | Ref: ${pay.ref})`
-      })
-    });
+    try {
+      await supabaseRequest('penerimaan_kas', {
+        method: 'POST',
+        body: JSON.stringify({
+          no_bukti: generateReceiptNumber(),
+          id_penyewaan: row.id_penyewaan,
+          metode_pembayaran: pay.method,
+          jumlah_diterima: row.total_harga,
+          keterangan: `Terverifikasi (${pay.sender} | Ref: ${pay.ref})`
+        })
+      });
+    } catch (err) {
+      // Jika ternyata sudah tercatat sebelumnya, lanjutkan sinkronisasi status
+      if (!String(err.message).toLowerCase().includes('duplicate key')) {
+        throw err;
+      }
+    }
 
-    // 2. Perbarui status_booking menjadi BOOKED
     await supabaseRequest(
       `penyewaan?id_penyewaan=eq.${encodeURIComponent(row.id_penyewaan)}`,
       {
@@ -1004,7 +1180,9 @@ async function approvePayment(idPenyewaan, button) {
 }
 
 async function rejectPayment(idPenyewaan, button) {
-  const row = state.pendingList.find((item) => item.id_penyewaan === idPenyewaan);
+  const row = state.pendingList.find(
+    (item) => Number(item.id_penyewaan) === Number(idPenyewaan)
+  );
   if (!row) return;
 
   const ok = window.confirm(
@@ -1029,7 +1207,6 @@ async function rejectPayment(idPenyewaan, button) {
         }
       );
     } catch {
-      // Fallback jika status 'CANCELLED' ditolak constraint: hapus pengajuan belum bayar
       await supabaseRequest(
         `penyewaan?id_penyewaan=eq.${encodeURIComponent(row.id_penyewaan)}`,
         { method: 'DELETE' }
@@ -1046,26 +1223,14 @@ async function rejectPayment(idPenyewaan, button) {
 }
 
 // ======================================================
-// PROTEKSI PEMILIK & LAPORAN PENERIMAAN KAS
+// AKSES PORTAL PEMILIK & LAPORAN PENERIMAAN KAS
 // ======================================================
 
-async function openOwnerReport() {
-  const isUnlocked = sessionStorage.getItem('snapspace_owner_auth') === 'true';
-
-  if (!isUnlocked) {
-    const input = window.prompt(
-      'Khusus Pemilik SnapSpace\nMasukkan password untuk membuka Verifikasi & Laporan Kas:'
-    );
-
-    if (input === null) return;
-
-    if (input !== OWNER_PASSWORD) {
-      showToast('Password salah. Akses Laporan Kas khusus pemilik.');
-      return;
-    }
-
-    sessionStorage.setItem('snapspace_owner_auth', 'true');
-    showToast('Login pemilik berhasil.');
+async function openOwnerPortal() {
+  if (!isOwnerLoggedIn()) {
+    showPage(pages.ownerLogin);
+    setTimeout(() => $('ownerPasswordInput')?.focus(), 100);
+    return;
   }
 
   showPage(pages.report);
@@ -1075,18 +1240,21 @@ async function openOwnerReport() {
 async function loadReport() {
   $('reportStatus').textContent = 'Memuat...';
 
-  // Muat antrean verifikasi secara bersamaan
-  await loadPendingVerifications();
-
   try {
     const endpoint =
       `penerimaan_kas?` +
-      `select=id_penerimaan,no_bukti,tanggal_bayar,metode_pembayaran,jumlah_diterima,keterangan,` +
+      `select=id_penerimaan,id_penyewaan,no_bukti,tanggal_bayar,metode_pembayaran,jumlah_diterima,keterangan,` +
       `penyewaan(kode_booking,tanggal_reservasi,jam_reservasi,outlet,` +
       `paket(nama_paket,durasi_menit),pelanggan(nama_pelanggan,email))` +
       `&order=tanggal_bayar.desc`;
 
     const rows = (await supabaseRequest(endpoint)) || [];
+
+    // Kumpulkan semua id_penyewaan yang sudah masuk kas untuk memfilter antrean
+    const paidBookingIdSet = new Set(
+      rows.map((item) => Number(item.id_penyewaan)).filter(Boolean)
+    );
+    await loadPendingVerifications(paidBookingIdSet);
 
     const totalCash = rows.reduce(
       (sum, item) => sum + Number(item.jumlah_diterima || 0),
@@ -1168,7 +1336,9 @@ $('startBookingBtn').addEventListener('click', async () => {
   }
 });
 
-$('navReportBtn').addEventListener('click', openOwnerReport);
+if ($('navReportBtn')) {
+  $('navReportBtn').addEventListener('click', openOwnerPortal);
+}
 
 $('backHomeBtn').addEventListener('click', () => {
   showPage(pages.home);
@@ -1196,7 +1366,7 @@ document.querySelectorAll('input[name="payment"]').forEach((radio) => {
 });
 
 if ($('successReportBtn')) {
-  $('successReportBtn').addEventListener('click', openOwnerReport);
+  $('successReportBtn').addEventListener('click', openOwnerPortal);
 }
 
 $('newBookingBtn').addEventListener('click', async () => {
@@ -1215,9 +1385,25 @@ $('printReportBtn').addEventListener('click', () => {
   window.print();
 });
 
+// Pintasan rahasia pemilik: klik 2x logo SnapSpace di pojok kiri atas
+const headerBrand = document.querySelector('header > div');
+if (headerBrand) {
+  headerBrand.style.cursor = 'pointer';
+  headerBrand.addEventListener('dblclick', openOwnerPortal);
+}
+
 // ======================================================
 // INIT
 // ======================================================
 
+createOwnerLoginPage();
+setupReportNavigationButtons();
+syncOwnerVisibility();
 setMinimumDate();
 updatePaymentInstruction();
+
+// Cek apakah dibuka lewat link khusus pemilik (?mode=owner atau #owner)
+const urlParams = new URLSearchParams(window.location.search);
+if (urlParams.get('mode') === 'owner' || window.location.hash === '#owner') {
+  openOwnerPortal();
+}
