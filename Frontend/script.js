@@ -5,7 +5,7 @@
 const SUPABASE_URL = 'https://lbtiszzodnopmivcfqkd.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_rRTNMxJmclKV5ey52bcM6Q_CBzccWpe';
 
-// GANTI PASSWORD PEMILIK DI BAWAH INI SESUAI KEINGINANMU
+// PASSWORD PEMILIK UNTUK AKSES VERIFIKASI & LAPORAN KAS
 const OWNER_PASSWORD = 'snapspace2026';
 
 const OUTLETS = [
@@ -28,7 +28,8 @@ const state = {
   packages: [],
   selectedPackage: null,
   outlets: [],
-  lastBooking: null
+  lastBooking: null,
+  pendingList: []
 };
 
 // ======================================================
@@ -139,8 +140,36 @@ function showToast(message) {
   }, 3500);
 }
 
+// Helper format & parse catatan verifikasi pembayaran
+function encodePaymentNote(method, sender, ref) {
+  const cleanSender = sender.replaceAll('|', '/').slice(0, 60);
+  const cleanRef = ref.replaceAll('|', '/').slice(0, 60);
+  return `METODE:${method}|PENGIRIM:${cleanSender}|REF:${cleanRef}`;
+}
+
+function parsePaymentNote(note) {
+  const result = { method: 'QRIS', sender: '—', ref: '—' };
+  if (!note) return result;
+
+  note.split('|').forEach((part) => {
+    const idx = part.indexOf(':');
+    if (idx === -1) return;
+    const key = part.slice(0, idx).trim();
+    const val = part.slice(idx + 1).trim();
+    if (key === 'METODE' && ALLOWED_PAYMENT_METHODS.includes(val)) {
+      result.method = val;
+    } else if (key === 'PENGIRIM') {
+      result.sender = val || '—';
+    } else if (key === 'REF') {
+      result.ref = val || '—';
+    }
+  });
+
+  return result;
+}
+
 // ======================================================
-// KOTAK INSTRUKSI PEMBAYARAN (QRIS & M-BANKING)
+// KOTAK PEMBAYARAN & INPUT BUKTI BAYAR (QRIS & M-BANKING)
 // ======================================================
 
 function getOrCreatePaymentInfoBox() {
@@ -178,11 +207,18 @@ function updatePaymentInstruction() {
     return;
   }
 
+  // Simpan nilai input jika pelanggan ganti paket setelah mengetik
+  const prevSender = $('payerName')?.value || '';
+  const prevRef = $('paymentRef')?.value || '';
+  const prevChecked = $('paymentConfirmedCheck')?.checked || false;
+
   const pkg = state.selectedPackage;
   const amountText = pkg ? formatRupiah(pkg.harga) : 'Pilih paket terlebih dahulu';
   const method = selected.value;
 
   box.style.display = 'block';
+
+  let instructionHtml = '';
 
   if (method === 'QRIS') {
     const qrData = encodeURIComponent(
@@ -190,8 +226,8 @@ function updatePaymentInstruction() {
     );
     const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${qrData}`;
 
-    box.innerHTML = `
-      <div style="text-align: center;">
+    instructionHtml = `
+      <div style="text-align: center; margin-bottom: 16px;">
         <div style="font-weight: 700; font-size: 15px; margin-bottom: 4px;">
           Pembayaran QRIS — SnapSpace Photobooth
         </div>
@@ -204,14 +240,11 @@ function updatePaymentInstruction() {
         <div style="font-size: 14px; margin-top: 4px;">
           Total Bayar: <strong>${amountText}</strong>
         </div>
-        <div style="font-size: 12px; color: #777; margin-top: 6px;">
-          *Simulasi pembayaran. Setelah scan, klik <strong>Confirm Booking</strong> untuk menyelesaikan transaksi.
-        </div>
       </div>
     `;
   } else if (method === 'M-BANKING') {
-    box.innerHTML = `
-      <div>
+    instructionHtml = `
+      <div style="margin-bottom: 16px;">
         <div style="font-weight: 700; font-size: 15px; margin-bottom: 6px;">
           Transfer M-Banking — Bank BCA (Simulasi)
         </div>
@@ -236,24 +269,76 @@ function updatePaymentInstruction() {
             <strong>${amountText}</strong>
           </div>
         </div>
-        <div style="font-size: 12px; color: #777;">
-          *Simulasi pembayaran. Setelah transfer sesuai nominal, klik <strong>Confirm Booking</strong> untuk konfirmasi.
-        </div>
       </div>
     `;
+  }
 
-    const copyBtn = $('copyRekBtn');
-    if (copyBtn) {
-      copyBtn.addEventListener('click', () => {
-        navigator.clipboard?.writeText('1234567890');
-        showToast('Nomor rekening 1234-5678-90 berhasil disalin.');
-      });
-    }
+  // Form Konfirmasi Bukti Pembayaran untuk diverifikasi Pemilik
+  const verificationFormHtml = `
+    <div style="background: #fff; border: 1px solid #e5e5e5; border-radius: 12px; padding: 14px;">
+      <div style="font-weight: 700; font-size: 14px; margin-bottom: 4px;">
+        Konfirmasi Bukti Pembayaran
+      </div>
+      <div style="font-size: 12px; color: #666; margin-bottom: 12px;">
+        Setelah membayar, isi detail transaksi di bawah ini agar pemilik dapat memverifikasi dana masuk sebelum dicatat di Laporan Kas.
+      </div>
+
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-bottom: 12px;">
+        <div>
+          <label for="payerName" style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px;">
+            Nama Pengirim / Akun *
+          </label>
+          <input
+            type="text"
+            id="payerName"
+            placeholder="Contoh: Indah Nugraheni"
+            value="${escapeHtml(prevSender)}"
+            required
+            style="width: 100%; padding: 9px 11px; border: 1px solid #d4d4d4; border-radius: 8px; font-size: 13px; box-sizing: border-box;"
+          />
+        </div>
+        <div>
+          <label for="paymentRef" style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px;">
+            No. Referensi / ID Transaksi *
+          </label>
+          <input
+            type="text"
+            id="paymentRef"
+            placeholder="Contoh: TRF-2026112701"
+            value="${escapeHtml(prevRef)}"
+            required
+            style="width: 100%; padding: 9px 11px; border: 1px solid #d4d4d4; border-radius: 8px; font-size: 13px; box-sizing: border-box;"
+          />
+        </div>
+      </div>
+
+      <label style="display: flex; align-items: flex-start; gap: 8px; font-size: 13px; cursor: pointer;">
+        <input
+          type="checkbox"
+          id="paymentConfirmedCheck"
+          ${prevChecked ? 'checked' : ''}
+          style="margin-top: 3px; width: 16px; height: 16px;"
+        />
+        <span>
+          Saya telah melakukan pembayaran sesuai nominal dan bersedia menunggu verifikasi dari pemilik.
+        </span>
+      </label>
+    </div>
+  `;
+
+  box.innerHTML = instructionHtml + verificationFormHtml;
+
+  const copyBtn = $('copyRekBtn');
+  if (copyBtn) {
+    copyBtn.addEventListener('click', () => {
+      navigator.clipboard?.writeText('1234567890');
+      showToast('Nomor rekening 1234-5678-90 berhasil disalin.');
+    });
   }
 }
 
 // ======================================================
-// SUPABASE DIRECT REQUEST (TANPA SERVER BACKEND)
+// SUPABASE DIRECT REQUEST
 // ======================================================
 
 async function supabaseRequest(endpoint, options = {}) {
@@ -403,7 +488,7 @@ function updateSummary() {
 }
 
 // ======================================================
-// CEK KETERSEDIAAN JADWAL
+// CEK KETERSEDIAAN JADWAL (HOLD SLOT UNTUK PENDING & BOOKED)
 // ======================================================
 
 async function getBookedReservations(date, outlet) {
@@ -411,16 +496,18 @@ async function getBookedReservations(date, outlet) {
     `penyewaan?` +
     `tanggal_reservasi=eq.${encodeURIComponent(date)}` +
     `&outlet=eq.${encodeURIComponent(outlet)}` +
-    `&status_booking=eq.BOOKED` +
-    `&select=jam_reservasi,total_harga,paket(durasi_menit),kode_booking`;
+    `&status_booking=neq.CANCELLED` +
+    `&select=jam_reservasi,total_harga,paket(durasi_menit),kode_booking,status_booking,catatan`;
 
   const rows = await supabaseRequest(endpoint);
-  return (rows || []).map((booking) => {
-    const duration = Number(booking.paket?.durasi_menit || 0);
-    const start = booking.jam_reservasi.slice(0, 5);
-    const end = minutesToTime(timeToMinutes(start) + duration);
-    return { start, duration, end };
-  });
+  return (rows || [])
+    .filter((b) => !(b.catatan || '').startsWith('[DITOLAK]'))
+    .map((booking) => {
+      const duration = Number(booking.paket?.durasi_menit || 0);
+      const start = booking.jam_reservasi.slice(0, 5);
+      const end = minutesToTime(timeToMinutes(start) + duration);
+      return { start, duration, end };
+    });
 }
 
 async function checkAvailability() {
@@ -475,7 +562,7 @@ async function checkAvailability() {
 }
 
 // ======================================================
-// SUBMIT BOOKING KE SUPABASE
+// SUBMIT BOOKING (MENUNGGU VERIFIKASI — BELUM MASUK KAS)
 // ======================================================
 
 async function submitBooking(event) {
@@ -495,6 +582,10 @@ async function submitBooking(event) {
   const time = $('time').value;
   const outlet = $('outlet').value;
   const paymentMethod = payment?.value || '';
+
+  const payerName = $('payerName')?.value.trim() || '';
+  const paymentRef = $('paymentRef')?.value.trim() || '';
+  const paymentConfirmed = $('paymentConfirmedCheck')?.checked || false;
 
   if (!name || !phone || !email) {
     showToast('Nama, nomor HP, dan email wajib diisi.');
@@ -520,12 +611,18 @@ async function submitBooking(event) {
     showToast('Silakan pilih metode pembayaran.');
     return;
   }
+  if (!payerName || !paymentRef) {
+    showToast('Isi Nama Pengirim dan No. Referensi Transaksi untuk verifikasi.');
+    return;
+  }
+  if (!paymentConfirmed) {
+    showToast('Centang konfirmasi bahwa Anda telah melakukan pembayaran.');
+    return;
+  }
 
   const submitButton = document.querySelector('.submit-btn');
   submitButton.disabled = true;
-  submitButton.textContent = 'Memproses Pembayaran...';
-
-  let createdBooking = null;
+  submitButton.textContent = 'Mengirim Pengajuan...';
 
   try {
     const pkg = state.selectedPackage;
@@ -588,53 +685,55 @@ async function submitBooking(event) {
       throw new Error('Data pelanggan gagal disimpan.');
     }
 
-    // 3. Simpan Penyewaan
+    // 3. Simpan Penyewaan dengan status PENDING (BELUM masuk ke penerimaan_kas!)
     const bookingCode = generateBookingCode();
-    const bookingResult = await supabaseRequest('penyewaan', {
-      method: 'POST',
-      body: JSON.stringify({
-        kode_booking: bookingCode,
-        id_pelanggan: customer.id_pelanggan,
-        id_paket: pkg.id_paket,
-        tanggal_reservasi: date,
-        jam_reservasi: `${time}:00`,
-        outlet,
-        total_harga: pkg.harga,
-        status_booking: 'BOOKED',
-        catatan: null
-      })
-    });
+    const paymentNote = encodePaymentNote(paymentMethod, payerName, paymentRef);
 
-    createdBooking = bookingResult?.[0];
-    if (!createdBooking) {
-      throw new Error('Data penyewaan gagal disimpan.');
+    const payloadPenyewaan = {
+      kode_booking: bookingCode,
+      id_pelanggan: customer.id_pelanggan,
+      id_paket: pkg.id_paket,
+      tanggal_reservasi: date,
+      jam_reservasi: `${time}:00`,
+      outlet,
+      total_harga: pkg.harga,
+      status_booking: 'PENDING',
+      catatan: paymentNote
+    };
+
+    let bookingResult;
+    try {
+      bookingResult = await supabaseRequest('penyewaan', {
+        method: 'POST',
+        body: JSON.stringify(payloadPenyewaan)
+      });
+    } catch (err) {
+      // Fallback jika database punya constraint hanya menerima 'BOOKED'
+      if (String(err.message).toLowerCase().includes('constraint')) {
+        payloadPenyewaan.status_booking = 'BOOKED';
+        bookingResult = await supabaseRequest('penyewaan', {
+          method: 'POST',
+          body: JSON.stringify(payloadPenyewaan)
+        });
+      } else {
+        throw err;
+      }
     }
 
-    // 4. Simpan Penerimaan Kas
-    const receiptResult = await supabaseRequest('penerimaan_kas', {
-      method: 'POST',
-      body: JSON.stringify({
-        no_bukti: generateReceiptNumber(),
-        id_penyewaan: createdBooking.id_penyewaan,
-        metode_pembayaran: paymentMethod,
-        jumlah_diterima: pkg.harga,
-        keterangan: `Pembayaran booking ${bookingCode}`
-      })
-    });
-
-    const receipt = receiptResult?.[0];
-    if (!receipt) {
-      throw new Error('Data penerimaan kas gagal disimpan.');
+    const createdBooking = bookingResult?.[0];
+    if (!createdBooking) {
+      throw new Error('Data penyewaan gagal disimpan.');
     }
 
     const resultData = {
       booking: createdBooking,
       customer,
       package: pkg,
-      receipt,
       payment: {
         method: paymentMethod,
-        amount: pkg.harga
+        amount: pkg.harga,
+        sender: payerName,
+        ref: paymentRef
       },
       schedule: {
         start: time,
@@ -646,18 +745,8 @@ async function submitBooking(event) {
     state.lastBooking = resultData;
     fillSuccess(resultData);
     showPage(pages.success);
-    showToast('Pembayaran berhasil & booking tersimpan ke database.');
+    showToast('Reservasi dikirim! Menunggu verifikasi pembayaran oleh pemilik.');
   } catch (error) {
-    if (createdBooking?.id_penyewaan) {
-      try {
-        await supabaseRequest(
-          `penyewaan?id_penyewaan=eq.${encodeURIComponent(
-            createdBooking.id_penyewaan
-          )}`,
-          { method: 'DELETE' }
-        );
-      } catch {}
-    }
     showToast(error.message);
   } finally {
     submitButton.disabled = false;
@@ -670,16 +759,26 @@ async function submitBooking(event) {
 // ======================================================
 
 function fillSuccess(data) {
+  // Perbarui teks keterangan di halaman success agar sesuai alur SIA
+  const heading = pages.success.querySelector('h1');
+  const subtitle = pages.success.querySelector('p');
+  if (heading) heading.textContent = 'Menunggu Verifikasi Pembayaran.';
+  if (subtitle) {
+    subtitle.textContent =
+      'Bukti pembayaran Anda sudah diterima. Pemilik akan memverifikasi dana masuk terlebih dahulu sebelum transaksi dicatat di Laporan Penerimaan Kas.';
+  }
+
   $('successCode').textContent = data.booking.kode_booking;
   $('successName').textContent = data.customer.nama_pelanggan;
   $('successPackage').textContent = data.package.nama_paket;
   $('successDate').textContent = formatDate(data.booking.tanggal_reservasi);
   $('successTime').textContent = `${data.schedule.start} – ${data.schedule.end}`;
   $('successOutlet').textContent = data.booking.outlet;
+
+  const methodLabel =
+    data.payment.method === 'M-BANKING' ? 'M-Banking' : 'QRIS';
   $('successPayment').textContent =
-    data.payment.method === 'M-BANKING'
-      ? 'M-Banking — LUNAS ✓'
-      : 'QRIS — LUNAS ✓';
+    `${methodLabel} (Ref: ${data.payment.ref}) — Menunggu Verifikasi`;
   $('successAmount').textContent = formatRupiah(data.payment.amount);
 }
 
@@ -696,6 +795,257 @@ function resetBookingForm() {
 }
 
 // ======================================================
+// PANEL VERIFIKASI PEMILIK (DI HALAMAN LAPORAN KAS)
+// ======================================================
+
+function getOrCreatePendingSection() {
+  let section = $('pendingVerificationSection');
+  if (section) return section;
+
+  section = document.createElement('div');
+  section.id = 'pendingVerificationSection';
+  section.style.cssText = `
+    background: #ffffff;
+    border: 1px solid #e8e2d9;
+    border-radius: 20px;
+    padding: 24px;
+    margin: 24px 0;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.03);
+  `;
+
+  section.innerHTML = `
+    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 16px;">
+      <div>
+        <div style="font-size: 11px; font-weight: 700; letter-spacing: 1px; color: #c25e3e; text-transform: uppercase;">
+          PAYMENT VERIFICATION
+        </div>
+        <h2 style="margin: 4px 0 0; font-size: 20px;">
+          Antrean Verifikasi Pembayaran
+        </h2>
+        <p style="margin: 4px 0 0; font-size: 13px; color: #666;">
+          Cek mutasi rekening/QRIS terlebih dahulu. Klik <strong>Terima</strong> hanya jika dana benar-benar sudah masuk agar tercatat ke Laporan Kas.
+        </p>
+      </div>
+      <span id="pendingCountBadge" style="font-size: 13px; font-weight: 600; color: #b45309; background: #fef3c7; padding: 6px 12px; border-radius: 999px;">
+        0 menunggu
+      </span>
+    </div>
+    <div id="pendingListContainer" style="display: flex; flex-direction: column; gap: 12px;">
+      <div style="color: #777; font-size: 14px;">Memuat antrean verifikasi...</div>
+    </div>
+  `;
+
+  const tableEl = $('reportTableBody')?.closest('table');
+  const tableCard = tableEl?.parentElement?.parentElement;
+  if (tableCard && tableCard.parentElement === pages.report) {
+    pages.report.insertBefore(section, tableCard);
+  } else {
+    pages.report.appendChild(section);
+  }
+
+  return section;
+}
+
+async function loadPendingVerifications() {
+  getOrCreatePendingSection();
+  const container = $('pendingListContainer');
+  const badge = $('pendingCountBadge');
+
+  try {
+    const endpoint =
+      `penyewaan?` +
+      `select=id_penyewaan,kode_booking,tanggal_reservasi,jam_reservasi,outlet,total_harga,status_booking,catatan,` +
+      `paket(nama_paket,durasi_menit),` +
+      `pelanggan(nama_pelanggan,email,no_hp),` +
+      `penerimaan_kas(id_penerimaan)` +
+      `&order=id_penyewaan.desc`;
+
+    const rows = (await supabaseRequest(endpoint)) || [];
+
+    // Hanya tampilkan booking yang BELUM punya penerimaan_kas dan belum dibatalkan
+    const pending = rows.filter((row) => {
+      const hasReceipt =
+        Array.isArray(row.penerimaan_kas) && row.penerimaan_kas.length > 0;
+      const isCancelled =
+        row.status_booking === 'CANCELLED' ||
+        (row.catatan || '').startsWith('[DITOLAK]');
+      return !hasReceipt && !isCancelled;
+    });
+
+    state.pendingList = pending;
+    badge.textContent = `${pending.length} menunggu`;
+
+    if (!pending.length) {
+      container.innerHTML = `
+        <div style="padding: 16px; border-radius: 12px; background: #f9fafb; color: #666; font-size: 14px; text-align: center;">
+          Tidak ada pembayaran yang menunggu verifikasi. Semua transaksi sudah diproses.
+        </div>
+      `;
+      return;
+    }
+
+    container.innerHTML = pending
+      .map((row) => {
+        const pay = parsePaymentNote(row.catatan);
+        const customer = row.pelanggan || {};
+        const pkg = row.paket || {};
+        const jam = row.jam_reservasi ? row.jam_reservasi.slice(0, 5) : '—';
+
+        return `
+          <div style="border: 1px solid #e5e7eb; border-radius: 14px; padding: 16px; background: #fcfcfb; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 14px;">
+            <div style="flex: 1; min-width: 240px;">
+              <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px;">
+                <strong style="font-size: 15px;">${escapeHtml(row.kode_booking)}</strong>
+                <span style="font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 999px; background: #fef3c7; color: #92400e;">
+                  MENUNGGU VERIFIKASI
+                </span>
+                <span style="font-size: 12px; font-weight: 600; padding: 3px 8px; border-radius: 999px; background: #f3f4f6; color: #111;">
+                  ${escapeHtml(pay.method)}
+                </span>
+              </div>
+              <div style="font-size: 13px; color: #333; margin-bottom: 4px;">
+                <strong>${escapeHtml(customer.nama_pelanggan || '—')}</strong> • ${escapeHtml(pkg.nama_paket || '—')} • ${formatDate(row.tanggal_reservasi)} (${jam}) • ${escapeHtml(row.outlet || '—')}
+              </div>
+              <div style="font-size: 13px; color: #555;">
+                Pengirim: <strong>${escapeHtml(pay.sender)}</strong> &nbsp;|&nbsp;
+                No. Ref: <strong>${escapeHtml(pay.ref)}</strong> &nbsp;|&nbsp;
+                Nominal: <strong style="color: #111;">${formatRupiah(row.total_harga)}</strong>
+              </div>
+            </div>
+
+            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+              <button
+                type="button"
+                data-approve-id="${row.id_penyewaan}"
+                style="padding: 9px 14px; border-radius: 10px; border: none; background: #16a34a; color: #fff; font-weight: 600; font-size: 13px; cursor: pointer;"
+              >
+                ✓ Terima (Uang Masuk)
+              </button>
+              <button
+                type="button"
+                data-reject-id="${row.id_penyewaan}"
+                style="padding: 9px 14px; border-radius: 10px; border: 1px solid #dc2626; background: #fff; color: #dc2626; font-weight: 600; font-size: 13px; cursor: pointer;"
+              >
+                ✕ Tolak
+              </button>
+            </div>
+          </div>
+        `;
+      })
+      .join('');
+
+    // Pasang event tombol Terima & Tolak
+    container.querySelectorAll('[data-approve-id]').forEach((btn) => {
+      btn.addEventListener('click', () =>
+        approvePayment(Number(btn.dataset.approveId), btn)
+      );
+    });
+
+    container.querySelectorAll('[data-reject-id]').forEach((btn) => {
+      btn.addEventListener('click', () =>
+        rejectPayment(Number(btn.dataset.rejectId), btn)
+      );
+    });
+  } catch (error) {
+    container.innerHTML = `<div style="color: #dc2626; font-size: 13px;">Gagal memuat antrean: ${escapeHtml(error.message)}</div>`;
+  }
+}
+
+async function approvePayment(idPenyewaan, button) {
+  const row = state.pendingList.find((item) => item.id_penyewaan === idPenyewaan);
+  if (!row) return;
+
+  const pay = parsePaymentNote(row.catatan);
+  const ok = window.confirm(
+    `Konfirmasi Verifikasi Pembayaran:\n\n` +
+      `Kode Booking: ${row.kode_booking}\n` +
+      `Metode: ${pay.method}\n` +
+      `Pengirim: ${pay.sender}\n` +
+      `No. Ref: ${pay.ref}\n` +
+      `Nominal: ${formatRupiah(row.total_harga)}\n\n` +
+      `Apakah dana sudah benar-benar masuk dan siap dicatat ke Laporan Penerimaan Kas?`
+  );
+  if (!ok) return;
+
+  button.disabled = true;
+  button.textContent = 'Memproses...';
+
+  try {
+    // 1. Catat ke tabel penerimaan_kas (Kas benar-benar diterima)
+    await supabaseRequest('penerimaan_kas', {
+      method: 'POST',
+      body: JSON.stringify({
+        no_bukti: generateReceiptNumber(),
+        id_penyewaan: row.id_penyewaan,
+        metode_pembayaran: pay.method,
+        jumlah_diterima: row.total_harga,
+        keterangan: `Terverifikasi (${pay.sender} | Ref: ${pay.ref})`
+      })
+    });
+
+    // 2. Perbarui status_booking menjadi BOOKED
+    await supabaseRequest(
+      `penyewaan?id_penyewaan=eq.${encodeURIComponent(row.id_penyewaan)}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({
+          status_booking: 'BOOKED'
+        })
+      }
+    );
+
+    showToast(`Pembayaran ${row.kode_booking} terverifikasi & masuk Laporan Kas.`);
+    await loadReport();
+  } catch (error) {
+    showToast(`Gagal verifikasi: ${error.message}`);
+    button.disabled = false;
+    button.textContent = '✓ Terima (Uang Masuk)';
+  }
+}
+
+async function rejectPayment(idPenyewaan, button) {
+  const row = state.pendingList.find((item) => item.id_penyewaan === idPenyewaan);
+  if (!row) return;
+
+  const ok = window.confirm(
+    `Tolak pembayaran untuk ${row.kode_booking}?\n\n` +
+      `Booking akan dibatalkan, jadwal akan dibuka kembali, dan transaksi TIDAK dicatat di Laporan Kas.`
+  );
+  if (!ok) return;
+
+  button.disabled = true;
+  button.textContent = 'Membatalkan...';
+
+  try {
+    try {
+      await supabaseRequest(
+        `penyewaan?id_penyewaan=eq.${encodeURIComponent(row.id_penyewaan)}`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({
+            status_booking: 'CANCELLED',
+            catatan: `[DITOLAK] ${row.catatan || ''}`
+          })
+        }
+      );
+    } catch {
+      // Fallback jika status 'CANCELLED' ditolak constraint: hapus pengajuan belum bayar
+      await supabaseRequest(
+        `penyewaan?id_penyewaan=eq.${encodeURIComponent(row.id_penyewaan)}`,
+        { method: 'DELETE' }
+      );
+    }
+
+    showToast(`Booking ${row.kode_booking} ditolak & tidak dicatat ke kas.`);
+    await loadReport();
+  } catch (error) {
+    showToast(`Gagal menolak: ${error.message}`);
+    button.disabled = false;
+    button.textContent = '✕ Tolak';
+  }
+}
+
+// ======================================================
 // PROTEKSI PEMILIK & LAPORAN PENERIMAAN KAS
 // ======================================================
 
@@ -704,7 +1054,7 @@ async function openOwnerReport() {
 
   if (!isUnlocked) {
     const input = window.prompt(
-      'Khusus Pemilik SnapSpace\nMasukkan password untuk membuka Laporan Penerimaan Kas:'
+      'Khusus Pemilik SnapSpace\nMasukkan password untuk membuka Verifikasi & Laporan Kas:'
     );
 
     if (input === null) return;
@@ -724,6 +1074,9 @@ async function openOwnerReport() {
 
 async function loadReport() {
   $('reportStatus').textContent = 'Memuat...';
+
+  // Muat antrean verifikasi secara bersamaan
+  await loadPendingVerifications();
 
   try {
     const endpoint =
@@ -752,7 +1105,7 @@ async function loadReport() {
     $('totalMBanking').textContent = formatRupiah(totalMBanking);
 
     renderReportTable(rows);
-    $('reportStatus').textContent = `${rows.length} transaksi`;
+    $('reportStatus').textContent = `${rows.length} transaksi terverifikasi`;
   } catch (error) {
     $('reportStatus').textContent = 'Gagal memuat laporan.';
     showToast(error.message);
@@ -766,7 +1119,7 @@ function renderReportTable(rows) {
     body.innerHTML = `
       <tr>
         <td colspan="8" class="empty-table">
-          Belum ada transaksi. Buat booking terlebih dahulu.
+          Belum ada transaksi terverifikasi. Verifikasi pembayaran pada antrean di atas.
         </td>
       </tr>
     `;
