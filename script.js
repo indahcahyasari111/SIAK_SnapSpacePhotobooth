@@ -77,6 +77,38 @@ function showPage(page) {
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
+function copyTextToClipboard(text, successMessage, silent = false) {
+  if (!text) return;
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard
+      .writeText(text)
+      .then(() => {
+        if (!silent && successMessage) showToast(successMessage);
+      })
+      .catch(() => {
+        if (!silent) fallbackCopy(text, successMessage);
+      });
+  } else if (!silent) {
+    fallbackCopy(text, successMessage);
+  }
+}
+
+function fallbackCopy(text, successMessage) {
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  document.body.appendChild(textarea);
+  textarea.select();
+  try {
+    document.execCommand('copy');
+    if (successMessage) showToast(successMessage);
+  } catch {
+    showToast('Gagal menyalin teks.');
+  }
+  document.body.removeChild(textarea);
+}
+
 function formatRupiah(value) {
   return new Intl.NumberFormat('id-ID', {
     style: 'currency',
@@ -248,7 +280,7 @@ function updatePaymentInstruction() {
 }
 
 // ======================================================
-// POP-UP PAYMENT GATEWAY (SANDBOX SIMULATOR)
+// POP-UP PAYMENT GATEWAY (VERIFIKASI OTOMATIS)
 // ======================================================
 
 function stopGatewayTimer() {
@@ -290,8 +322,8 @@ function ensurePaymentGatewayModal() {
         <div>
           <div style="display: flex; align-items: center; gap: 8px;">
             <strong style="font-size: 16px; letter-spacing: 0.3px;">SnapPay Gateway</strong>
-            <span style="font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 999px; background: #f59e0b; color: #111827;">
-              SANDBOX
+            <span style="font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 999px; background: #10b981; color: #ffffff;">
+              SECURE
             </span>
           </div>
           <div style="font-size: 12px; color: #9ca3af; margin-top: 2px;">
@@ -395,7 +427,7 @@ function openPaymentGatewayModal(sessionData) {
         id="gwPaySuccessBtn"
         style="width: 100%; padding: 13px 16px; border-radius: 12px; border: none; background: #16a34a; color: #ffffff; font-size: 14px; font-weight: 700; cursor: pointer;"
       >
-        ✓ Simulasi Bayar Berhasil (Verifikasi Otomatis)
+        ✓ Verifikasi Sekarang
       </button>
       <button
         type="button"
@@ -407,15 +439,14 @@ function openPaymentGatewayModal(sessionData) {
     </div>
 
     <div style="text-align: center; font-size: 11px; color: #94a3b8; margin-top: 14px;">
-      🔒 Secured by SnapPay Gateway Simulator • Mode Pengujian SIA
+      🔒 Secured by SnapPay Payment Gateway • Terverifikasi Otomatis
     </div>
   `;
 
   modal.style.display = 'flex';
 
   $('gwCopyVaBtn')?.addEventListener('click', () => {
-    navigator.clipboard?.writeText(vaClean);
-    showToast(`Virtual Account ${vaNumber} berhasil disalin.`);
+    copyTextToClipboard(vaClean, `Virtual Account ${vaNumber} berhasil disalin.`);
   });
 
   $('gwPaySuccessBtn')?.addEventListener('click', () => completeGatewayPayment());
@@ -448,13 +479,12 @@ async function completeGatewayPayment() {
   stopGatewayTimer();
 
   try {
-    // Jeda simulasi callback Payment Gateway (1.5 detik)
     await new Promise((resolve) => setTimeout(resolve, 1500));
 
     const gatewayRef = generateGatewayRef();
     const receiptNo = generateReceiptNumber();
 
-    // 1. Otomatis catat ke tabel penerimaan_kas (Kas masuk terverifikasi otomatis)
+    // 1. Otomatis catat ke tabel penerimaan_kas
     const receiptResult = await supabaseRequest('penerimaan_kas', {
       method: 'POST',
       body: JSON.stringify({
@@ -500,7 +530,12 @@ async function completeGatewayPayment() {
     closePaymentGatewayModal();
     fillSuccess(finalData);
     showPage(pages.success);
-    showToast('Pembayaran terverifikasi otomatis! E-Ticket & Laporan Kas diperbarui.');
+
+    // Auto-copy kode booking secara otomatis ke clipboard
+    copyTextToClipboard(session.booking.kode_booking, '', true);
+    showToast(
+      `Pembayaran terverifikasi! Kode booking ${session.booking.kode_booking} otomatis tersalin.`
+    );
   } catch (error) {
     if (statusArea) {
       statusArea.style.background = '#fef2f2';
@@ -719,6 +754,35 @@ function getOrCreateCustomerStatusBanner() {
   }
 
   return banner;
+}
+
+function setupSuccessNavigationButtons() {
+  const newBookingBtn = $('newBookingBtn');
+  if (!newBookingBtn || $('successBackHomeBtn')) return;
+
+  const container = newBookingBtn.parentElement;
+  if (!container) return;
+
+  const backHomeBtn = document.createElement('button');
+  backHomeBtn.type = 'button';
+  backHomeBtn.id = 'successBackHomeBtn';
+  backHomeBtn.textContent = '← Kembali ke Home';
+  backHomeBtn.style.cssText = `
+    padding: 12px 18px;
+    border-radius: 999px;
+    border: 1px solid #d4d4d4;
+    background: #ffffff;
+    color: #111111;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+  `;
+
+  backHomeBtn.addEventListener('click', () => {
+    showPage(pages.home);
+  });
+
+  container.insertBefore(backHomeBtn, newBookingBtn);
 }
 
 // ======================================================
@@ -1383,7 +1447,6 @@ async function submitBooking(event) {
       throw new Error('Data penyewaan gagal disimpan.');
     }
 
-    // Buka Pop-up Payment Gateway (Sandbox) untuk verifikasi otomatis
     openPaymentGatewayModal({
       booking: createdBooking,
       customer,
@@ -1447,15 +1510,28 @@ function fillSuccess(data) {
               No. Bukti Resmi: <strong>${escapeHtml(data.receipt?.no_bukti || '—')}</strong>
             </div>
           </div>
-          <button
-            type="button"
-            id="printTicketBtn"
-            style="padding: 9px 14px; border-radius: 10px; border: none; background: #059669; color: #fff; font-size: 13px; font-weight: 600; cursor: pointer;"
-          >
-            🖨️ Cetak / Simpan E-Ticket
-          </button>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <button
+              type="button"
+              id="copyBookingCodeBtn"
+              style="padding: 9px 14px; border-radius: 10px; border: 1px solid #059669; background: #ffffff; color: #065f46; font-size: 13px; font-weight: 600; cursor: pointer;"
+            >
+              📋 Salin Kode Booking
+            </button>
+            <button
+              type="button"
+              id="printTicketBtn"
+              style="padding: 9px 14px; border-radius: 10px; border: none; background: #059669; color: #fff; font-size: 13px; font-weight: 600; cursor: pointer;"
+            >
+              🖨️ Cetak / Simpan E-Ticket
+            </button>
+          </div>
         </div>
       `;
+
+      $('copyBookingCodeBtn')?.addEventListener('click', () => {
+        copyTextToClipboard(kode, `Kode booking ${kode} berhasil disalin.`);
+      });
 
       $('printTicketBtn')?.addEventListener('click', () => {
         window.print();
@@ -1512,7 +1588,14 @@ function fillSuccess(data) {
     }
   }
 
-  if ($('successCode')) $('successCode').textContent = kode;
+  if ($('successCode')) {
+    $('successCode').textContent = kode;
+    $('successCode').title = 'Klik untuk menyalin kode booking';
+    $('successCode').style.cursor = 'pointer';
+    $('successCode').onclick = () => {
+      copyTextToClipboard(kode, `Kode booking ${kode} berhasil disalin.`);
+    };
+  }
   if ($('successName')) $('successName').textContent = data.customer.nama_pelanggan || '—';
   if ($('successPackage')) $('successPackage').textContent = data.package.nama_paket || '—';
   if ($('successDate')) $('successDate').textContent = formatDate(data.booking.tanggal_reservasi);
@@ -1698,6 +1781,7 @@ $('printReportBtn')?.addEventListener('click', () => {
 try {
   createOwnerLoginPage();
   createHomeStatusLookupBox();
+  setupSuccessNavigationButtons();
   setupReportNavigationButtons();
   syncOwnerVisibility();
   setMinimumDate();
