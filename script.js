@@ -34,7 +34,8 @@ const state = {
   selectedPackage: null,
   outlets: [],
   lastBooking: null,
-  pendingList: []
+  pendingList: [],
+  statusPollTimer: null
 };
 
 // ======================================================
@@ -56,19 +57,27 @@ function isOwnerLoggedIn() {
 }
 
 function syncOwnerVisibility() {
-  // Tombol Dashboard Pemilik selalu tampil di pojok kanan atas (wajib password jika belum login)
   if ($('navReportBtn')) {
     $('navReportBtn').style.display = '';
     $('navReportBtn').textContent = 'Dashboard Pemilik';
   }
 
-  // Halaman Menunggu Verifikasi pelanggan TIDAK menampilkan tombol Laporan Kas sama sekali
   if ($('successReportBtn')) {
     $('successReportBtn').style.display = 'none';
   }
 }
 
+function stopStatusPolling() {
+  if (state.statusPollTimer) {
+    clearInterval(state.statusPollTimer);
+    state.statusPollTimer = null;
+  }
+}
+
 function showPage(page) {
+  if (page !== pages.success) {
+    stopStatusPolling();
+  }
   Object.values(pages).forEach((p) => {
     if (p) p.classList.remove('active');
   });
@@ -193,6 +202,210 @@ function parsePaymentNote(note) {
   });
 
   return result;
+}
+
+// ======================================================
+// KOTAK "CEK STATUS BOOKING" DI HALAMAN HOME (PELANGGAN)
+// ======================================================
+
+function createHomeStatusLookupBox() {
+  if (!pages.home || $('homeStatusLookupBox')) return;
+
+  const savedCode = localStorage.getItem('snapspace_last_booking_code') || '';
+
+  const box = document.createElement('div');
+  box.id = 'homeStatusLookupBox';
+  box.style.cssText = `
+    margin-top: 28px;
+    background: #ffffff;
+    border: 1px solid #e8e2d9;
+    border-radius: 20px;
+    padding: 22px 24px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.03);
+  `;
+
+  box.innerHTML = `
+    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px;">
+      <div style="flex: 1; min-width: 220px;">
+        <div style="font-size: 11px; font-weight: 700; letter-spacing: 1px; color: #c25e3e; text-transform: uppercase;">
+          CEK STATUS RESERVASI
+        </div>
+        <h3 style="margin: 4px 0 4px; font-size: 18px;">
+          Sudah booking? Cek status verifikasi Anda.
+        </h3>
+        <p style="margin: 0; font-size: 13px; color: #666;">
+          Masukkan Kode Booking (contoh: PB-...) untuk melihat apakah pembayaran sudah diverifikasi oleh pemilik.
+        </p>
+      </div>
+      <form id="homeCheckStatusForm" style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+        <input
+          type="text"
+          id="lookupBookingCodeInput"
+          placeholder="Masukkan Kode Booking (PB-...)"
+          value="${escapeHtml(savedCode)}"
+          required
+          style="padding: 11px 14px; border: 1px solid #d4d4d4; border-radius: 10px; font-size: 13px; min-width: 220px; text-transform: uppercase;"
+        />
+        <button
+          type="submit"
+          id="lookupBookingBtn"
+          style="padding: 11px 16px; border-radius: 10px; border: none; background: #111; color: #fff; font-size: 13px; font-weight: 600; cursor: pointer;"
+        >
+          Cek Status →
+        </button>
+      </form>
+    </div>
+  `;
+
+  pages.home.appendChild(box);
+
+  $('homeCheckStatusForm')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const code = ($('lookupBookingCodeInput')?.value || '').trim().toUpperCase();
+    if (!code) {
+      showToast('Masukkan kode booking terlebih dahulu.');
+      return;
+    }
+
+    const btn = $('lookupBookingBtn');
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = 'Mencari...';
+    }
+
+    try {
+      const found = await fetchBookingStatusByCode(code);
+      if (!found) {
+        showToast(`Kode booking "${code}" tidak ditemukan.`);
+        return;
+      }
+
+      localStorage.setItem('snapspace_last_booking_code', code);
+      state.lastBooking = found;
+      fillSuccess(found);
+      showPage(pages.success);
+      if (found.verificationStatus === 'PENDING') {
+        startStatusPolling(code);
+      }
+    } catch (error) {
+      showToast(`Gagal mengecek status: ${error.message}`);
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = 'Cek Status →';
+      }
+    }
+  });
+}
+
+// ======================================================
+// CEK STATUS REAL-TIME KE SUPABASE (UNTUK PELANGGAN)
+// ======================================================
+
+async function fetchBookingStatusByCode(kodeBooking) {
+  const endpoint =
+    `penyewaan?` +
+    `kode_booking=eq.${encodeURIComponent(kodeBooking)}` +
+    `&select=*,paket(*),pelanggan(*)`;
+
+  const bookings = await supabaseRequest(endpoint);
+  const booking = bookings?.[0];
+  if (!booking) return null;
+
+  // Cek langsung ke tabel penerimaan_kas apakah sudah disetujui pemilik
+  const receipts = await supabaseRequest(
+    `penerimaan_kas?id_penyewaan=eq.${encodeURIComponent(booking.id_penyewaan)}&select=*`
+  );
+  const receipt = receipts?.[0] || null;
+
+  const isRejected =
+    booking.status_booking === 'CANCELLED' ||
+    (booking.catatan || '').startsWith('[DITOLAK]');
+
+  let verificationStatus = 'PENDING';
+  if (receipt) {
+    verificationStatus = 'VERIFIED';
+  } else if (isRejected) {
+    verificationStatus = 'REJECTED';
+  }
+
+  const pay = parsePaymentNote(booking.catatan);
+  const pkg = booking.paket || {};
+  const customer = booking.pelanggan || {};
+  const start = (booking.jam_reservasi || '00:00').slice(0, 5);
+  const duration = Number(pkg.durasi_menit || 0);
+  const end = minutesToTime(timeToMinutes(start) + duration);
+
+  return {
+    booking,
+    customer,
+    package: pkg,
+    receipt,
+    verificationStatus,
+    payment: {
+      method: receipt?.metode_pembayaran || pay.method,
+      amount: receipt?.jumlah_diterima || booking.total_harga,
+      sender: pay.sender,
+      ref: pay.ref
+    },
+    schedule: {
+      start,
+      end,
+      duration
+    }
+  };
+}
+
+function getOrCreateCustomerStatusBanner() {
+  let banner = $('customerStatusBanner');
+  if (banner) return banner;
+
+  banner = document.createElement('div');
+  banner.id = 'customerStatusBanner';
+  banner.style.cssText = `
+    margin: 18px 0;
+    padding: 16px 18px;
+    border-radius: 14px;
+    font-size: 13px;
+    line-height: 1.5;
+    text-align: left;
+  `;
+
+  const subtitle = pages.success?.querySelector('p');
+  if (subtitle && subtitle.parentElement) {
+    subtitle.parentElement.insertBefore(banner, subtitle.nextSibling);
+  } else if (pages.success) {
+    pages.success.prepend(banner);
+  }
+
+  return banner;
+}
+
+function startStatusPolling(kodeBooking) {
+  stopStatusPolling();
+  state.statusPollTimer = setInterval(async () => {
+    if (!pages.success?.classList.contains('active')) {
+      stopStatusPolling();
+      return;
+    }
+    try {
+      const updated = await fetchBookingStatusByCode(kodeBooking);
+      if (!updated) return;
+
+      if (updated.verificationStatus !== 'PENDING') {
+        state.lastBooking = updated;
+        fillSuccess(updated);
+        stopStatusPolling();
+        if (updated.verificationStatus === 'VERIFIED') {
+          showToast('Pembayaran Anda telah diverifikasi! Booking resmi dikonfirmasi.');
+        } else if (updated.verificationStatus === 'REJECTED') {
+          showToast('Maaf, pembayaran Anda ditolak oleh pemilik.');
+        }
+      }
+    } catch {
+      // Abaikan error jaringan sesaat saat auto-check
+    }
+  }, 5000);
 }
 
 // ======================================================
@@ -998,10 +1211,18 @@ async function submitBooking(event) {
       throw new Error('Data penyewaan gagal disimpan.');
     }
 
+    // Simpan kode booking terakhir agar mudah dicek lagi di halaman Home
+    localStorage.setItem('snapspace_last_booking_code', bookingCode);
+    if ($('lookupBookingCodeInput')) {
+      $('lookupBookingCodeInput').value = bookingCode;
+    }
+
     const resultData = {
       booking: createdBooking,
       customer,
       package: pkg,
+      receipt: null,
+      verificationStatus: 'PENDING',
       payment: {
         method: paymentMethod,
         amount: pkg.harga,
@@ -1018,6 +1239,7 @@ async function submitBooking(event) {
     state.lastBooking = resultData;
     fillSuccess(resultData);
     showPage(pages.success);
+    startStatusPolling(bookingCode);
     showToast('Reservasi berhasil dikirim! Menunggu verifikasi pembayaran.');
   } catch (error) {
     showToast(error.message);
@@ -1030,41 +1252,166 @@ async function submitBooking(event) {
 }
 
 // ======================================================
-// SUCCESS PAGE (KHUSUS PELANGGAN — TANPA INFO LAPORAN KAS)
+// HALAMAN STATUS PELANGGAN (PENDING -> VERIFIED / REJECTED)
 // ======================================================
 
 function fillSuccess(data) {
+  const status = data.verificationStatus || 'PENDING';
   const heading = pages.success?.querySelector('h1');
   const subtitle = pages.success?.querySelector('p');
-  if (heading) heading.textContent = 'Menunggu Verifikasi Pembayaran.';
-  if (subtitle) {
-    subtitle.textContent =
-      'Bukti pembayaran Anda telah kami terima. Tim SnapSpace akan memverifikasi pembayaran Anda dan mengonfirmasi jadwal sesi photobooth Anda.';
-  }
+  const banner = getOrCreateCustomerStatusBanner();
+  const kode = data.booking?.kode_booking || '';
 
   if ($('successReportBtn')) {
     $('successReportBtn').style.display = 'none';
   }
 
-  if ($('successCode')) $('successCode').textContent = data.booking.kode_booking;
-  if ($('successName')) $('successName').textContent = data.customer.nama_pelanggan;
-  if ($('successPackage')) $('successPackage').textContent = data.package.nama_paket;
-  if ($('successDate')) $('successDate').textContent = formatDate(data.booking.tanggal_reservasi);
-  if ($('successTime')) $('successTime').textContent = `${data.schedule.start} – ${data.schedule.end} WIB`;
-  if ($('successOutlet')) $('successOutlet').textContent = data.booking.outlet;
-
   const methodLabel =
     data.payment.method === 'M-BANKING' ? 'M-Banking' : 'QRIS';
-  if ($('successPayment')) {
-    $('successPayment').textContent =
-      `${methodLabel} (Ref: ${data.payment.ref}) — Menunggu Verifikasi`;
+
+  if (status === 'VERIFIED') {
+    if (heading) heading.textContent = 'Booking Sukses & Terverifikasi!';
+    if (subtitle) {
+      subtitle.textContent =
+        'Pembayaran Anda telah diverifikasi oleh pemilik. Jadwal sesi photobooth Anda resmi dikonfirmasi — tunjukkan kode booking ini saat tiba di outlet.';
+    }
+
+    if (banner) {
+      banner.style.background = '#ecfdf5';
+      banner.style.border = '1px solid #a7f3d0';
+      banner.style.color = '#065f46';
+      banner.innerHTML = `
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+          <div>
+            <div style="font-weight: 700; font-size: 14px; margin-bottom: 2px;">
+              ✓ PEMBAYARAN TERVERIFIKASI (LUNAS)
+            </div>
+            <div>
+              No. Bukti Resmi: <strong>${escapeHtml(data.receipt?.no_bukti || '—')}</strong>
+            </div>
+          </div>
+          <button
+            type="button"
+            id="printTicketBtn"
+            style="padding: 9px 14px; border-radius: 10px; border: none; background: #059669; color: #fff; font-size: 13px; font-weight: 600; cursor: pointer;"
+          >
+            🖨️ Cetak / Simpan E-Ticket
+          </button>
+        </div>
+      `;
+
+      $('printTicketBtn')?.addEventListener('click', () => {
+        window.print();
+      });
+    }
+
+    if ($('successPayment')) {
+      $('successPayment').textContent = `${methodLabel} — LUNAS ✓`;
+    }
+  } else if (status === 'REJECTED') {
+    if (heading) heading.textContent = 'Pembayaran Ditolak.';
+    if (subtitle) {
+      subtitle.textContent =
+        'Mohon maaf, pembayaran Anda tidak dapat diverifikasi oleh pemilik sehingga reservasi dibatalkan. Silakan buat booking baru dengan bukti pembayaran yang valid.';
+    }
+
+    if (banner) {
+      banner.style.background = '#fef2f2';
+      banner.style.border = '1px solid #fecaca';
+      banner.style.color = '#991b1b';
+      banner.innerHTML = `
+        <div style="font-weight: 700; font-size: 14px; margin-bottom: 2px;">
+          ✕ PEMBAYARAN DITOLAK / DIBATALKAN
+        </div>
+        <div>
+          Dana tidak ditemukan pada mutasi pemilik. Silakan hubungi admin outlet atau lakukan pemesanan ulang.
+        </div>
+      `;
+    }
+
+    if ($('successPayment')) {
+      $('successPayment').textContent = `${methodLabel} — Ditolak`;
+    }
+  } else {
+    if (heading) heading.textContent = 'Menunggu Verifikasi Pembayaran.';
+    if (subtitle) {
+      subtitle.textContent =
+        'Bukti pembayaran Anda telah kami terima. Halaman ini akan otomatis diperbarui begitu pemilik mengonfirmasi pembayaran Anda.';
+    }
+
+    if (banner) {
+      banner.style.background = '#fffbeb';
+      banner.style.border = '1px solid #fde68a';
+      banner.style.color = '#92400e';
+      banner.innerHTML = `
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+          <div>
+            <div style="font-weight: 700; font-size: 14px; margin-bottom: 2px;">
+              ⏳ MENUNGGU VERIFIKASI PEMILIK
+            </div>
+            <div>
+              Simpan kode booking <strong>${escapeHtml(kode)}</strong> untuk mengecek status kapan saja.
+            </div>
+          </div>
+          <button
+            type="button"
+            id="manualCheckStatusBtn"
+            style="padding: 9px 14px; border-radius: 10px; border: 1px solid #d97706; background: #fff; color: #92400e; font-size: 13px; font-weight: 600; cursor: pointer;"
+          >
+            🔄 Cek Status Sekarang
+          </button>
+        </div>
+      `;
+
+      $('manualCheckStatusBtn')?.addEventListener('click', async () => {
+        const btn = $('manualCheckStatusBtn');
+        if (btn) {
+          btn.disabled = true;
+          btn.textContent = 'Mengecek...';
+        }
+        try {
+          const updated = await fetchBookingStatusByCode(kode);
+          if (updated) {
+            state.lastBooking = updated;
+            fillSuccess(updated);
+            if (updated.verificationStatus === 'VERIFIED') {
+              stopStatusPolling();
+              showToast('Pembayaran sudah diverifikasi! Booking sukses.');
+            } else if (updated.verificationStatus === 'REJECTED') {
+              stopStatusPolling();
+              showToast('Pembayaran ditolak oleh pemilik.');
+            } else {
+              showToast('Masih menunggu verifikasi pemilik. Coba cek beberapa saat lagi.');
+            }
+          }
+        } catch (err) {
+          showToast(err.message);
+        } finally {
+          if ($('manualCheckStatusBtn')) {
+            $('manualCheckStatusBtn').disabled = false;
+            $('manualCheckStatusBtn').textContent = '🔄 Cek Status Sekarang';
+          }
+        }
+      });
+    }
+
+    if ($('successPayment')) {
+      $('successPayment').textContent =
+        `${methodLabel} (Ref: ${data.payment.ref}) — Menunggu Verifikasi`;
+    }
   }
-  if ($('successAmount')) {
-    $('successAmount').textContent = formatRupiah(data.payment.amount);
-  }
+
+  if ($('successCode')) $('successCode').textContent = kode;
+  if ($('successName')) $('successName').textContent = data.customer.nama_pelanggan || '—';
+  if ($('successPackage')) $('successPackage').textContent = data.package.nama_paket || '—';
+  if ($('successDate')) $('successDate').textContent = formatDate(data.booking.tanggal_reservasi);
+  if ($('successTime')) $('successTime').textContent = `${data.schedule.start} – ${data.schedule.end} WIB`;
+  if ($('successOutlet')) $('successOutlet').textContent = data.booking.outlet || '—';
+  if ($('successAmount')) $('successAmount').textContent = formatRupiah(data.payment.amount);
 }
 
 function resetBookingForm() {
+  stopStatusPolling();
   $('bookingForm')?.reset();
   state.selectedPackage = null;
   renderPackages();
@@ -1436,7 +1783,7 @@ function renderReportTable(rows) {
 }
 
 // ======================================================
-// EVENT LISTENERS (AMAN DENGAN OPTIONAL CHAINING)
+// EVENT LISTENERS
 // ======================================================
 
 $('startBookingBtn')?.addEventListener('click', async () => {
@@ -1489,11 +1836,12 @@ $('printReportBtn')?.addEventListener('click', () => {
 });
 
 // ======================================================
-// INIT (DIBUNGKUS AMAN AGAR TOMBOL TIDAK PERNAH MACET)
+// INIT
 // ======================================================
 
 try {
   createOwnerLoginPage();
+  createHomeStatusLookupBox();
   setupReportNavigationButtons();
   syncOwnerVisibility();
   setMinimumDate();
