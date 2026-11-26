@@ -34,8 +34,8 @@ const state = {
   selectedPackage: null,
   outlets: [],
   lastBooking: null,
-  pendingList: [],
-  statusPollTimer: null
+  activeGatewaySession: null,
+  gatewayTimerInterval: null
 };
 
 // ======================================================
@@ -67,17 +67,7 @@ function syncOwnerVisibility() {
   }
 }
 
-function stopStatusPolling() {
-  if (state.statusPollTimer) {
-    clearInterval(state.statusPollTimer);
-    state.statusPollTimer = null;
-  }
-}
-
 function showPage(page) {
-  if (page !== pages.success) {
-    stopStatusPolling();
-  }
   Object.values(pages).forEach((p) => {
     if (p) p.classList.remove('active');
   });
@@ -149,12 +139,29 @@ function randomHex(length) {
   return result;
 }
 
+function randomDigits(length) {
+  let result = '';
+  for (let i = 0; i < length; i++) {
+    result += Math.floor(Math.random() * 10);
+  }
+  return result;
+}
+
 function generateBookingCode() {
   return `PB-${Date.now().toString().slice(-8)}-${randomHex(6)}`;
 }
 
 function generateReceiptNumber() {
   return `KM-${Date.now().toString().slice(-8)}-${randomHex(4)}`;
+}
+
+function generateGatewayRef() {
+  return `GW-${Date.now().toString().slice(-6)}-${randomHex(6)}`;
+}
+
+function generateVirtualAccount(phone) {
+  const digits = String(phone || '').replace(/\D/g, '').slice(-8) || randomDigits(8);
+  return `8077 ${digits.slice(0, 4)} ${digits.slice(4, 8)}`;
 }
 
 function escapeHtml(value) {
@@ -177,31 +184,375 @@ function showToast(message) {
   }, 3500);
 }
 
-function encodePaymentNote(method, sender, ref) {
-  const cleanSender = sender.replaceAll('|', '/').slice(0, 60);
-  const cleanRef = ref.replaceAll('|', '/').slice(0, 60);
-  return `METODE:${method}|PENGIRIM:${cleanSender}|REF:${cleanRef}`;
+// ======================================================
+// KOTAK INFO PAYMENT GATEWAY DI FORM BOOKING
+// ======================================================
+
+function getOrCreatePaymentInfoBox() {
+  let box = $('paymentInfoBox');
+  if (box) return box;
+
+  const submitBtn = document.querySelector('.submit-btn');
+  if (!submitBtn || !submitBtn.parentElement) return null;
+
+  box = document.createElement('div');
+  box.id = 'paymentInfoBox';
+  box.style.cssText = `
+    display: none;
+    margin: 14px 0 18px;
+    padding: 14px 16px;
+    border-radius: 12px;
+    border: 1px solid #e2e8f0;
+    background: #f8fafc;
+    font-size: 13px;
+    line-height: 1.5;
+    color: #334155;
+  `;
+
+  submitBtn.parentElement.insertBefore(box, submitBtn);
+  return box;
 }
 
-function parsePaymentNote(note) {
-  const result = { method: 'QRIS', sender: '—', ref: '—' };
-  if (!note) return result;
+function updatePaymentInstruction() {
+  const box = getOrCreatePaymentInfoBox();
+  if (!box) return;
 
-  note.split('|').forEach((part) => {
-    const idx = part.indexOf(':');
-    if (idx === -1) return;
-    const key = part.slice(0, idx).trim();
-    const val = part.slice(idx + 1).trim();
-    if (key === 'METODE' && ALLOWED_PAYMENT_METHODS.includes(val)) {
-      result.method = val;
-    } else if (key === 'PENGIRIM') {
-      result.sender = val || '—';
-    } else if (key === 'REF') {
-      result.ref = val || '—';
-    }
+  const selected = document.querySelector('input[name="payment"]:checked');
+  if (!selected) {
+    box.style.display = 'none';
+    box.innerHTML = '';
+    return;
+  }
+
+  const pkg = state.selectedPackage;
+  const amountText = pkg ? formatRupiah(pkg.harga) : 'sesuai paket pilihan';
+  const methodLabel =
+    selected.value === 'M-BANKING'
+      ? 'M-Banking (BCA Virtual Account)'
+      : 'QRIS Instan';
+
+  box.style.display = 'block';
+  box.innerHTML = `
+    <div style="display: flex; align-items: flex-start; gap: 10px;">
+      <span style="font-size: 18px; line-height: 1;">⚡</span>
+      <div>
+        <div style="font-weight: 700; color: #0f172a; margin-bottom: 2px;">
+          Verifikasi Otomatis via SnapPay Payment Gateway
+        </div>
+        <div>
+          Metode dipilih: <strong>${methodLabel}</strong> (${amountText}). Klik <strong>Confirm Booking</strong> untuk membuka jendela pembayaran otomatis — status booking & E-Ticket akan langsung aktif setelah pembayaran berhasil.
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ======================================================
+// POP-UP PAYMENT GATEWAY (SANDBOX SIMULATOR)
+// ======================================================
+
+function stopGatewayTimer() {
+  if (state.gatewayTimerInterval) {
+    clearInterval(state.gatewayTimerInterval);
+    state.gatewayTimerInterval = null;
+  }
+}
+
+function closePaymentGatewayModal() {
+  stopGatewayTimer();
+  const modal = $('paymentGatewayModal');
+  if (modal) modal.style.display = 'none';
+  state.activeGatewaySession = null;
+}
+
+function ensurePaymentGatewayModal() {
+  let modal = $('paymentGatewayModal');
+  if (modal) return modal;
+
+  modal = document.createElement('div');
+  modal.id = 'paymentGatewayModal';
+  modal.style.cssText = `
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    background: rgba(15, 23, 42, 0.65);
+    backdrop-filter: blur(4px);
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    box-sizing: border-box;
+  `;
+
+  modal.innerHTML = `
+    <div id="paymentGatewayCard" style="width: 100%; max-width: 440px; background: #ffffff; border-radius: 20px; overflow: hidden; box-shadow: 0 24px 60px rgba(0, 0, 0, 0.25); font-family: inherit;">
+      <div style="background: #111827; color: #ffffff; padding: 18px 22px; display: flex; justify-content: space-between; align-items: center;">
+        <div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <strong style="font-size: 16px; letter-spacing: 0.3px;">SnapPay Gateway</strong>
+            <span style="font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 999px; background: #f59e0b; color: #111827;">
+              SANDBOX
+            </span>
+          </div>
+          <div style="font-size: 12px; color: #9ca3af; margin-top: 2px;">
+            SnapSpace Photobooth • Verifikasi Otomatis
+          </div>
+        </div>
+        <div style="text-align: right;">
+          <div style="font-size: 11px; color: #9ca3af;">Batas Waktu</div>
+          <div id="gwCountdown" style="font-size: 15px; font-weight: 700; color: #fde68a;">15:00</div>
+        </div>
+      </div>
+
+      <div id="gwBody" style="padding: 22px;"></div>
+    </div>
+  `;
+
+  document.body.appendChild(modal);
+  return modal;
+}
+
+function openPaymentGatewayModal(sessionData) {
+  const modal = ensurePaymentGatewayModal();
+  const body = $('gwBody');
+  const countdownEl = $('gwCountdown');
+  state.activeGatewaySession = sessionData;
+
+  const { booking, customer, package: pkg, payment } = sessionData;
+  const isQRIS = payment.method === 'QRIS';
+  const vaNumber = generateVirtualAccount(customer.no_hp);
+  const vaClean = vaNumber.replace(/\s/g, '');
+
+  let methodContentHtml = '';
+
+  if (isQRIS) {
+    const qrPayload = encodeURIComponent(
+      `SNAPPAY-GATEWAY|ORDER:${booking.kode_booking}|AMOUNT:${pkg.harga}`
+    );
+    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=190x190&data=${qrPayload}`;
+
+    methodContentHtml = `
+      <div style="text-align: center; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 14px; padding: 16px; margin-bottom: 18px;">
+        <div style="font-size: 13px; font-weight: 700; color: #0f172a; margin-bottom: 4px;">
+          Scan QRIS untuk Membayar
+        </div>
+        <div style="font-size: 12px; color: #64748b; margin-bottom: 12px;">
+          Mendukung GoPay, OVO, DANA, ShopeePay, BCA Mobile, Livin', & BRImo
+        </div>
+        <div style="display: inline-block; padding: 10px; background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;">
+          <img src="${qrUrl}" alt="QRIS Payment Gateway" width="175" height="175" style="display: block;" />
+        </div>
+      </div>
+    `;
+  } else {
+    methodContentHtml = `
+      <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 14px; padding: 16px; margin-bottom: 18px;">
+        <div style="font-size: 12px; font-weight: 700; color: #1d4ed8; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">
+          BCA Virtual Account (Otomatis)
+        </div>
+        <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px; background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px 14px;">
+          <div>
+            <div style="font-size: 11px; color: #64748b;">Nomor Virtual Account</div>
+            <div style="font-size: 19px; font-weight: 700; letter-spacing: 0.8px; color: #0f172a;">${vaNumber}</div>
+          </div>
+          <button
+            type="button"
+            id="gwCopyVaBtn"
+            style="padding: 8px 12px; border-radius: 8px; border: 1px solid #111827; background: #111827; color: #fff; font-size: 12px; font-weight: 600; cursor: pointer;"
+          >
+            Salin VA
+          </button>
+        </div>
+        <div style="font-size: 12px; color: #64748b; margin-top: 10px;">
+          Nominal otomatis terdeteksi di aplikasi M-Banking. Tidak perlu kirim bukti transfer.
+        </div>
+      </div>
+    `;
+  }
+
+  body.innerHTML = `
+    <div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 14px; margin-bottom: 16px; border-bottom: 1px solid #e5e7eb;">
+      <div>
+        <div style="font-size: 11px; color: #64748b;">Order ID</div>
+        <div style="font-size: 13px; font-weight: 700; color: #0f172a;">${escapeHtml(booking.kode_booking)}</div>
+        <div style="font-size: 12px; color: #475569;">${escapeHtml(pkg.nama_paket)} • ${escapeHtml(booking.outlet)}</div>
+      </div>
+      <div style="text-align: right;">
+        <div style="font-size: 11px; color: #64748b;">Total Bayar</div>
+        <div style="font-size: 18px; font-weight: 800; color: #0f172a;">${formatRupiah(pkg.harga)}</div>
+      </div>
+    </div>
+
+    ${methodContentHtml}
+
+    <div id="gwStatusArea" style="display: none; text-align: center; padding: 14px; margin-bottom: 14px; border-radius: 12px; background: #eff6ff; color: #1e40af; font-size: 13px; font-weight: 600;">
+      ⏳ Memverifikasi pembayaran secara otomatis dengan Payment Gateway...
+    </div>
+
+    <div id="gwActionButtons" style="display: flex; flex-direction: column; gap: 10px;">
+      <button
+        type="button"
+        id="gwPaySuccessBtn"
+        style="width: 100%; padding: 13px 16px; border-radius: 12px; border: none; background: #16a34a; color: #ffffff; font-size: 14px; font-weight: 700; cursor: pointer;"
+      >
+        ✓ Simulasi Bayar Berhasil (Verifikasi Otomatis)
+      </button>
+      <button
+        type="button"
+        id="gwCancelBtn"
+        style="width: 100%; padding: 11px 16px; border-radius: 12px; border: 1px solid #e2e8f0; background: #ffffff; color: #dc2626; font-size: 13px; font-weight: 600; cursor: pointer;"
+      >
+        ✕ Batalkan Pembayaran
+      </button>
+    </div>
+
+    <div style="text-align: center; font-size: 11px; color: #94a3b8; margin-top: 14px;">
+      🔒 Secured by SnapPay Gateway Simulator • Mode Pengujian SIA
+    </div>
+  `;
+
+  modal.style.display = 'flex';
+
+  $('gwCopyVaBtn')?.addEventListener('click', () => {
+    navigator.clipboard?.writeText(vaClean);
+    showToast(`Virtual Account ${vaNumber} berhasil disalin.`);
   });
 
-  return result;
+  $('gwPaySuccessBtn')?.addEventListener('click', () => completeGatewayPayment());
+  $('gwCancelBtn')?.addEventListener('click', () => cancelGatewayPayment(false));
+
+  // Countdown 15 menit
+  let remainingSeconds = 15 * 60;
+  stopGatewayTimer();
+  if (countdownEl) countdownEl.textContent = '15:00';
+  state.gatewayTimerInterval = setInterval(() => {
+    remainingSeconds -= 1;
+    if (remainingSeconds <= 0) {
+      cancelGatewayPayment(true);
+      return;
+    }
+    const min = String(Math.floor(remainingSeconds / 60)).padStart(2, '0');
+    const sec = String(remainingSeconds % 60).padStart(2, '0');
+    if (countdownEl) countdownEl.textContent = `${min}:${sec}`;
+  }, 1000);
+}
+
+async function completeGatewayPayment() {
+  const session = state.activeGatewaySession;
+  if (!session) return;
+
+  const statusArea = $('gwStatusArea');
+  const actionButtons = $('gwActionButtons');
+  if (statusArea) statusArea.style.display = 'block';
+  if (actionButtons) actionButtons.style.display = 'none';
+  stopGatewayTimer();
+
+  try {
+    // Jeda simulasi callback Payment Gateway (1.5 detik)
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+
+    const gatewayRef = generateGatewayRef();
+    const receiptNo = generateReceiptNumber();
+
+    // 1. Otomatis catat ke tabel penerimaan_kas (Kas masuk terverifikasi otomatis)
+    const receiptResult = await supabaseRequest('penerimaan_kas', {
+      method: 'POST',
+      body: JSON.stringify({
+        no_bukti: receiptNo,
+        id_penyewaan: session.booking.id_penyewaan,
+        metode_pembayaran: session.payment.method,
+        jumlah_diterima: session.package.harga,
+        keterangan: `Auto-Verified via SnapPay Gateway (Ref: ${gatewayRef})`
+      })
+    });
+
+    const receipt = receiptResult?.[0] || {
+      no_bukti: receiptNo,
+      metode_pembayaran: session.payment.method,
+      jumlah_diterima: session.package.harga
+    };
+
+    // 2. Otomatis perbarui status booking menjadi BOOKED
+    await supabaseRequest(
+      `penyewaan?id_penyewaan=eq.${encodeURIComponent(session.booking.id_penyewaan)}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({
+          status_booking: 'BOOKED',
+          catatan: `GATEWAY:SNAPPAY|METODE:${session.payment.method}|REF:${gatewayRef}|STATUS:PAID`
+        })
+      }
+    );
+
+    localStorage.setItem('snapspace_last_booking_code', session.booking.kode_booking);
+    if ($('lookupBookingCodeInput')) {
+      $('lookupBookingCodeInput').value = session.booking.kode_booking;
+    }
+
+    const finalData = {
+      ...session,
+      receipt,
+      gatewayRef,
+      verificationStatus: 'VERIFIED'
+    };
+
+    state.lastBooking = finalData;
+    closePaymentGatewayModal();
+    fillSuccess(finalData);
+    showPage(pages.success);
+    showToast('Pembayaran terverifikasi otomatis! E-Ticket & Laporan Kas diperbarui.');
+  } catch (error) {
+    if (statusArea) {
+      statusArea.style.background = '#fef2f2';
+      statusArea.style.color = '#991b1b';
+      statusArea.textContent = `Gagal memverifikasi: ${error.message}`;
+    }
+    if (actionButtons) actionButtons.style.display = 'flex';
+  }
+}
+
+async function cancelGatewayPayment(isTimeout = false) {
+  const session = state.activeGatewaySession;
+  if (!session) {
+    closePaymentGatewayModal();
+    return;
+  }
+
+  const cancelBtn = $('gwCancelBtn');
+  if (cancelBtn) {
+    cancelBtn.disabled = true;
+    cancelBtn.textContent = 'Membatalkan...';
+  }
+
+  try {
+    try {
+      await supabaseRequest(
+        `penyewaan?id_penyewaan=eq.${encodeURIComponent(session.booking.id_penyewaan)}`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({
+            status_booking: 'CANCELLED',
+            catatan: isTimeout ? '[DITOLAK] Waktu pembayaran habis' : '[DITOLAK] Dibatalkan pelanggan'
+          })
+        }
+      );
+    } catch {
+      await supabaseRequest(
+        `penyewaan?id_penyewaan=eq.${encodeURIComponent(session.booking.id_penyewaan)}`,
+        { method: 'DELETE' }
+      );
+    }
+  } catch {
+    // Abaikan jika gagal hapus
+  } finally {
+    closePaymentGatewayModal();
+    checkAvailability();
+    showToast(
+      isTimeout
+        ? 'Waktu pembayaran habis. Reservasi otomatis dibatalkan.'
+        : 'Pembayaran dibatalkan. Jadwal kembali tersedia.'
+    );
+  }
 }
 
 // ======================================================
@@ -228,13 +579,13 @@ function createHomeStatusLookupBox() {
     <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px;">
       <div style="flex: 1; min-width: 220px;">
         <div style="font-size: 11px; font-weight: 700; letter-spacing: 1px; color: #c25e3e; text-transform: uppercase;">
-          CEK STATUS RESERVASI
+          CEK E-TICKET & STATUS RESERVASI
         </div>
         <h3 style="margin: 4px 0 4px; font-size: 18px;">
-          Sudah booking? Cek status verifikasi Anda.
+          Sudah booking? Cek E-Ticket Anda di sini.
         </h3>
         <p style="margin: 0; font-size: 13px; color: #666;">
-          Masukkan Kode Booking (contoh: PB-...) untuk melihat apakah pembayaran sudah diverifikasi oleh pemilik.
+          Masukkan Kode Booking (PB-...) untuk melihat status pembayaran dan mencetak ulang E-Ticket.
         </p>
       </div>
       <form id="homeCheckStatusForm" style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
@@ -284,9 +635,6 @@ function createHomeStatusLookupBox() {
       state.lastBooking = found;
       fillSuccess(found);
       showPage(pages.success);
-      if (found.verificationStatus === 'PENDING') {
-        startStatusPolling(code);
-      }
     } catch (error) {
       showToast(`Gagal mengecek status: ${error.message}`);
     } finally {
@@ -298,10 +646,6 @@ function createHomeStatusLookupBox() {
   });
 }
 
-// ======================================================
-// CEK STATUS REAL-TIME KE SUPABASE (UNTUK PELANGGAN)
-// ======================================================
-
 async function fetchBookingStatusByCode(kodeBooking) {
   const endpoint =
     `penyewaan?` +
@@ -312,7 +656,6 @@ async function fetchBookingStatusByCode(kodeBooking) {
   const booking = bookings?.[0];
   if (!booking) return null;
 
-  // Cek langsung ke tabel penerimaan_kas apakah sudah disetujui pemilik
   const receipts = await supabaseRequest(
     `penerimaan_kas?id_penyewaan=eq.${encodeURIComponent(booking.id_penyewaan)}&select=*`
   );
@@ -329,7 +672,6 @@ async function fetchBookingStatusByCode(kodeBooking) {
     verificationStatus = 'REJECTED';
   }
 
-  const pay = parsePaymentNote(booking.catatan);
   const pkg = booking.paket || {};
   const customer = booking.pelanggan || {};
   const start = (booking.jam_reservasi || '00:00').slice(0, 5);
@@ -343,10 +685,8 @@ async function fetchBookingStatusByCode(kodeBooking) {
     receipt,
     verificationStatus,
     payment: {
-      method: receipt?.metode_pembayaran || pay.method,
-      amount: receipt?.jumlah_diterima || booking.total_harga,
-      sender: pay.sender,
-      ref: pay.ref
+      method: receipt?.metode_pembayaran || 'QRIS',
+      amount: receipt?.jumlah_diterima || booking.total_harga
     },
     schedule: {
       start,
@@ -379,33 +719,6 @@ function getOrCreateCustomerStatusBanner() {
   }
 
   return banner;
-}
-
-function startStatusPolling(kodeBooking) {
-  stopStatusPolling();
-  state.statusPollTimer = setInterval(async () => {
-    if (!pages.success?.classList.contains('active')) {
-      stopStatusPolling();
-      return;
-    }
-    try {
-      const updated = await fetchBookingStatusByCode(kodeBooking);
-      if (!updated) return;
-
-      if (updated.verificationStatus !== 'PENDING') {
-        state.lastBooking = updated;
-        fillSuccess(updated);
-        stopStatusPolling();
-        if (updated.verificationStatus === 'VERIFIED') {
-          showToast('Pembayaran Anda telah diverifikasi! Booking resmi dikonfirmasi.');
-        } else if (updated.verificationStatus === 'REJECTED') {
-          showToast('Maaf, pembayaran Anda ditolak oleh pemilik.');
-        }
-      }
-    } catch {
-      // Abaikan error jaringan sesaat saat auto-check
-    }
-  }, 5000);
 }
 
 // ======================================================
@@ -511,7 +824,7 @@ function createOwnerLoginPage() {
         Login Pemilik
       </h1>
       <p style="margin: 0 0 22px; font-size: 14px; color: #666; line-height: 1.5;">
-        Halaman khusus pengelola SnapSpace Photobooth untuk verifikasi pembayaran dan memantau Laporan Penerimaan Kas.
+        Halaman khusus pengelola SnapSpace Photobooth untuk memantau Laporan Penerimaan Kas yang terintegrasi otomatis dengan Payment Gateway.
       </p>
 
       <form id="ownerLoginForm">
@@ -637,168 +950,41 @@ function setupReportNavigationButtons() {
   btnContainer.appendChild(logoutBtn);
 }
 
-// ======================================================
-// KOTAK PEMBAYARAN & INPUT BUKTI BAYAR (QRIS & M-BANKING)
-// ======================================================
+function setupGatewayStatusBannerOnReport() {
+  if ($('gatewayActiveBanner') || !pages.report) return;
 
-function getOrCreatePaymentInfoBox() {
-  let box = $('paymentInfoBox');
-  if (box) return box;
-
-  const submitBtn = document.querySelector('.submit-btn');
-  if (!submitBtn || !submitBtn.parentElement) return null;
-
-  box = document.createElement('div');
-  box.id = 'paymentInfoBox';
-  box.style.cssText = `
-    display: none;
-    margin: 16px 0 20px;
-    padding: 18px;
+  const banner = document.createElement('div');
+  banner.id = 'gatewayActiveBanner';
+  banner.style.cssText = `
+    background: #ecfdf5;
+    border: 1px solid #a7f3d0;
+    color: #065f46;
     border-radius: 14px;
-    border: 1px solid #e5e5e5;
-    background: #fafafa;
-    font-size: 14px;
-    line-height: 1.5;
+    padding: 14px 18px;
+    margin: 18px 0;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px;
   `;
 
-  submitBtn.parentElement.insertBefore(box, submitBtn);
-  return box;
-}
-
-function updatePaymentInstruction() {
-  const box = getOrCreatePaymentInfoBox();
-  if (!box) return;
-
-  const selected = document.querySelector('input[name="payment"]:checked');
-  if (!selected) {
-    box.style.display = 'none';
-    box.innerHTML = '';
-    return;
-  }
-
-  const prevSender = $('payerName')?.value || '';
-  const prevRef = $('paymentRef')?.value || '';
-  const prevChecked = $('paymentConfirmedCheck')?.checked || false;
-
-  const pkg = state.selectedPackage;
-  const amountText = pkg ? formatRupiah(pkg.harga) : 'Pilih paket terlebih dahulu';
-  const method = selected.value;
-
-  box.style.display = 'block';
-
-  let instructionHtml = '';
-
-  if (method === 'QRIS') {
-    const qrData = encodeURIComponent(
-      `SNAPSPACE-PHOTOBOOTH|QRIS|TOTAL:${pkg ? pkg.harga : 0}`
-    );
-    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${qrData}`;
-
-    instructionHtml = `
-      <div style="text-align: center; margin-bottom: 16px;">
-        <div style="font-weight: 700; font-size: 15px; margin-bottom: 4px;">
-          Pembayaran QRIS — SnapSpace Photobooth
-        </div>
-        <div style="color: #666; font-size: 13px; margin-bottom: 12px;">
-          Scan QR code di bawah ini menggunakan GoPay, OVO, DANA, ShopeePay, atau M-Banking.
-        </div>
-        <div style="display: inline-block; padding: 10px; background: #fff; border: 1px solid #e0e0e0; border-radius: 12px; margin-bottom: 10px;">
-          <img src="${qrUrl}" alt="QRIS SnapSpace Photobooth" width="170" height="170" style="display: block;" />
-        </div>
-        <div style="font-size: 14px; margin-top: 4px;">
-          Total Bayar: <strong>${amountText}</strong>
-        </div>
-      </div>
-    `;
-  } else if (method === 'M-BANKING') {
-    instructionHtml = `
-      <div style="margin-bottom: 16px;">
-        <div style="font-weight: 700; font-size: 15px; margin-bottom: 6px;">
-          Transfer M-Banking — Bank BCA (Simulasi)
-        </div>
-        <div style="background: #fff; border: 1px solid #e5e5e5; border-radius: 10px; padding: 12px 14px; margin: 10px 0;">
-          <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap;">
-            <div>
-              <div style="font-size: 12px; color: #666;">Nomor Rekening</div>
-              <div style="font-size: 18px; font-weight: 700; letter-spacing: 0.5px;">1234-5678-90</div>
-              <div style="font-size: 13px; color: #444;">a.n. SnapSpace Photobooth</div>
-            </div>
-            <button
-              type="button"
-              id="copyRekBtn"
-              style="padding: 8px 12px; border-radius: 8px; border: 1px solid #111; background: #111; color: #fff; font-size: 12px; cursor: pointer;"
-            >
-              Salin No. Rek
-            </button>
-          </div>
-          <hr style="border: none; border-top: 1px solid #eee; margin: 10px 0;" />
-          <div style="display: flex; justify-content: space-between; font-size: 14px;">
-            <span style="color: #666;">Total Transfer</span>
-            <strong>${amountText}</strong>
-          </div>
-        </div>
-      </div>
-    `;
-  }
-
-  const verificationFormHtml = `
-    <div style="background: #fff; border: 1px solid #e5e5e5; border-radius: 12px; padding: 14px;">
-      <div style="font-weight: 700; font-size: 14px; margin-bottom: 4px;">
-        Konfirmasi Bukti Pembayaran
-      </div>
-      <div style="font-size: 12px; color: #666; margin-bottom: 12px;">
-        Salin Nama Pengirim dan No. Referensi dari struk transfer M-Banking atau riwayat transaksi QRIS Anda agar tim kami dapat memverifikasi pembayaran.
-      </div>
-
-      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-bottom: 12px;">
-        <div>
-          <label for="payerName" style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px;">
-            Nama Pengirim / Akun *
-          </label>
-          <input
-            type="text"
-            id="payerName"
-            placeholder="Contoh: Indah Nugraheni"
-            value="${escapeHtml(prevSender)}"
-            required
-            style="width: 100%; padding: 9px 11px; border: 1px solid #d4d4d4; border-radius: 8px; font-size: 13px; box-sizing: border-box;"
-          />
-        </div>
-        <div>
-          <label for="paymentRef" style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px;">
-            No. Referensi / ID Transaksi *
-          </label>
-          <input
-            type="text"
-            id="paymentRef"
-            placeholder="Contoh: TRF-2026112701"
-            value="${escapeHtml(prevRef)}"
-            required
-            style="width: 100%; padding: 9px 11px; border: 1px solid #d4d4d4; border-radius: 8px; font-size: 13px; box-sizing: border-box;"
-          />
-        </div>
-      </div>
-
-      <label style="display: flex; align-items: flex-start; gap: 8px; font-size: 13px; cursor: pointer;">
-        <input
-          type="checkbox"
-          id="paymentConfirmedCheck"
-          ${prevChecked ? 'checked' : ''}
-          style="margin-top: 3px; width: 16px; height: 16px;"
-        />
-        <span>
-          Saya telah melakukan pembayaran sesuai nominal dan bersedia menunggu konfirmasi verifikasi.
-        </span>
-      </label>
+  banner.innerHTML = `
+    <div>
+      <strong>⚡ Integrasi Payment Gateway Aktif (Auto-Verify):</strong>
+      Setiap pembayaran QRIS & M-Banking diverifikasi otomatis dan langsung tercatat pada Laporan Penerimaan Kas tanpa approval manual.
     </div>
+    <span style="font-size: 11px; font-weight: 700; padding: 4px 10px; border-radius: 999px; background: #059669; color: #fff;">
+      REAL-TIME SYNC
+    </span>
   `;
 
-  box.innerHTML = instructionHtml + verificationFormHtml;
-
-  $('copyRekBtn')?.addEventListener('click', () => {
-    navigator.clipboard?.writeText('1234567890');
-    showToast('Nomor rekening 1234-5678-90 berhasil disalin.');
-  });
+  const tableEl = $('reportTableBody')?.closest('table');
+  const tableCard = tableEl?.parentElement?.parentElement;
+  if (tableCard && tableCard.parentElement === pages.report) {
+    pages.report.insertBefore(banner, tableCard);
+  }
 }
 
 // ======================================================
@@ -1047,7 +1233,7 @@ async function checkAvailability() {
 }
 
 // ======================================================
-// SUBMIT BOOKING (MENUNGGU VERIFIKASI — BELUM MASUK KAS)
+// SUBMIT BOOKING -> BUKA PAYMENT GATEWAY POP-UP
 // ======================================================
 
 async function submitBooking(event) {
@@ -1067,10 +1253,6 @@ async function submitBooking(event) {
   const time = $('time')?.value || '';
   const outlet = $('outlet')?.value || '';
   const paymentMethod = payment?.value || '';
-
-  const payerName = $('payerName')?.value.trim() || '';
-  const paymentRef = $('paymentRef')?.value.trim() || '';
-  const paymentConfirmed = $('paymentConfirmedCheck')?.checked || false;
 
   if (!name || !phone || !email) {
     showToast('Nama, nomor HP, dan email wajib diisi.');
@@ -1105,19 +1287,11 @@ async function submitBooking(event) {
     showToast('Silakan pilih metode pembayaran.');
     return;
   }
-  if (!payerName || !paymentRef) {
-    showToast('Isi Nama Pengirim dan No. Referensi Transaksi untuk verifikasi.');
-    return;
-  }
-  if (!paymentConfirmed) {
-    showToast('Centang konfirmasi bahwa Anda telah melakukan pembayaran.');
-    return;
-  }
 
   const submitButton = document.querySelector('.submit-btn');
   if (submitButton) {
     submitButton.disabled = true;
-    submitButton.textContent = 'Mengirim Pengajuan...';
+    submitButton.textContent = 'Membuka Payment Gateway...';
   }
 
   try {
@@ -1174,8 +1348,6 @@ async function submitBooking(event) {
     }
 
     const bookingCode = generateBookingCode();
-    const paymentNote = encodePaymentNote(paymentMethod, payerName, paymentRef);
-
     const payloadPenyewaan = {
       kode_booking: bookingCode,
       id_pelanggan: customer.id_pelanggan,
@@ -1185,7 +1357,7 @@ async function submitBooking(event) {
       outlet,
       total_harga: pkg.harga,
       status_booking: 'PENDING',
-      catatan: paymentNote
+      catatan: `GATEWAY:SNAPPAY|METODE:${paymentMethod}|STATUS:WAITING_PAYMENT`
     };
 
     let bookingResult;
@@ -1211,36 +1383,21 @@ async function submitBooking(event) {
       throw new Error('Data penyewaan gagal disimpan.');
     }
 
-    // Simpan kode booking terakhir agar mudah dicek lagi di halaman Home
-    localStorage.setItem('snapspace_last_booking_code', bookingCode);
-    if ($('lookupBookingCodeInput')) {
-      $('lookupBookingCodeInput').value = bookingCode;
-    }
-
-    const resultData = {
+    // Buka Pop-up Payment Gateway (Sandbox) untuk verifikasi otomatis
+    openPaymentGatewayModal({
       booking: createdBooking,
       customer,
       package: pkg,
-      receipt: null,
-      verificationStatus: 'PENDING',
       payment: {
         method: paymentMethod,
-        amount: pkg.harga,
-        sender: payerName,
-        ref: paymentRef
+        amount: pkg.harga
       },
       schedule: {
         start: time,
         end: minutesToTime(endMinutes),
         duration
       }
-    };
-
-    state.lastBooking = resultData;
-    fillSuccess(resultData);
-    showPage(pages.success);
-    startStatusPolling(bookingCode);
-    showToast('Reservasi berhasil dikirim! Menunggu verifikasi pembayaran.');
+    });
   } catch (error) {
     showToast(error.message);
   } finally {
@@ -1252,11 +1409,11 @@ async function submitBooking(event) {
 }
 
 // ======================================================
-// HALAMAN STATUS PELANGGAN (PENDING -> VERIFIED / REJECTED)
+// HALAMAN E-TICKET / STATUS PELANGGAN
 // ======================================================
 
 function fillSuccess(data) {
-  const status = data.verificationStatus || 'PENDING';
+  const status = data.verificationStatus || 'VERIFIED';
   const heading = pages.success?.querySelector('h1');
   const subtitle = pages.success?.querySelector('p');
   const banner = getOrCreateCustomerStatusBanner();
@@ -1267,13 +1424,13 @@ function fillSuccess(data) {
   }
 
   const methodLabel =
-    data.payment.method === 'M-BANKING' ? 'M-Banking' : 'QRIS';
+    data.payment.method === 'M-BANKING' ? 'M-Banking (VA)' : 'QRIS';
 
   if (status === 'VERIFIED') {
     if (heading) heading.textContent = 'Booking Sukses & Terverifikasi!';
     if (subtitle) {
       subtitle.textContent =
-        'Pembayaran Anda telah diverifikasi oleh pemilik. Jadwal sesi photobooth Anda resmi dikonfirmasi — tunjukkan kode booking ini saat tiba di outlet.';
+        'Pembayaran Anda telah terverifikasi secara otomatis melalui Payment Gateway. Tunjukkan E-Ticket dan kode booking ini saat tiba di outlet.';
     }
 
     if (banner) {
@@ -1284,7 +1441,7 @@ function fillSuccess(data) {
         <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
           <div>
             <div style="font-weight: 700; font-size: 14px; margin-bottom: 2px;">
-              ✓ PEMBAYARAN TERVERIFIKASI (LUNAS)
+              ✓ PEMBAYARAN TERVERIFIKASI OTOMATIS (LUNAS)
             </div>
             <div>
               No. Bukti Resmi: <strong>${escapeHtml(data.receipt?.no_bukti || '—')}</strong>
@@ -1306,13 +1463,13 @@ function fillSuccess(data) {
     }
 
     if ($('successPayment')) {
-      $('successPayment').textContent = `${methodLabel} — LUNAS ✓`;
+      $('successPayment').textContent = `${methodLabel} — LUNAS (Auto-Verified ✓)`;
     }
   } else if (status === 'REJECTED') {
-    if (heading) heading.textContent = 'Pembayaran Ditolak.';
+    if (heading) heading.textContent = 'Pembayaran Dibatalkan.';
     if (subtitle) {
       subtitle.textContent =
-        'Mohon maaf, pembayaran Anda tidak dapat diverifikasi oleh pemilik sehingga reservasi dibatalkan. Silakan buat booking baru dengan bukti pembayaran yang valid.';
+        'Transaksi pembayaran dibatalkan atau melewati batas waktu. Silakan buat reservasi baru untuk memilih jadwal kembali.';
     }
 
     if (banner) {
@@ -1321,22 +1478,22 @@ function fillSuccess(data) {
       banner.style.color = '#991b1b';
       banner.innerHTML = `
         <div style="font-weight: 700; font-size: 14px; margin-bottom: 2px;">
-          ✕ PEMBAYARAN DITOLAK / DIBATALKAN
+          ✕ PEMBAYARAN DIBATALKAN / KEDALUWARSA
         </div>
         <div>
-          Dana tidak ditemukan pada mutasi pemilik. Silakan hubungi admin outlet atau lakukan pemesanan ulang.
+          Silakan klik tombol buat booking baru di bawah untuk mengulangi reservasi.
         </div>
       `;
     }
 
     if ($('successPayment')) {
-      $('successPayment').textContent = `${methodLabel} — Ditolak`;
+      $('successPayment').textContent = `${methodLabel} — Dibatalkan`;
     }
   } else {
-    if (heading) heading.textContent = 'Menunggu Verifikasi Pembayaran.';
+    if (heading) heading.textContent = 'Menunggu Pembayaran.';
     if (subtitle) {
       subtitle.textContent =
-        'Bukti pembayaran Anda telah kami terima. Halaman ini akan otomatis diperbarui begitu pemilik mengonfirmasi pembayaran Anda.';
+        'Reservasi ini belum menyelesaikan pembayaran di Payment Gateway.';
     }
 
     if (banner) {
@@ -1344,60 +1501,14 @@ function fillSuccess(data) {
       banner.style.border = '1px solid #fde68a';
       banner.style.color = '#92400e';
       banner.innerHTML = `
-        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
-          <div>
-            <div style="font-weight: 700; font-size: 14px; margin-bottom: 2px;">
-              ⏳ MENUNGGU VERIFIKASI PEMILIK
-            </div>
-            <div>
-              Simpan kode booking <strong>${escapeHtml(kode)}</strong> untuk mengecek status kapan saja.
-            </div>
-          </div>
-          <button
-            type="button"
-            id="manualCheckStatusBtn"
-            style="padding: 9px 14px; border-radius: 10px; border: 1px solid #d97706; background: #fff; color: #92400e; font-size: 13px; font-weight: 600; cursor: pointer;"
-          >
-            🔄 Cek Status Sekarang
-          </button>
+        <div style="font-weight: 700; font-size: 14px;">
+          ⏳ MENUNGGU PEMBAYARAN GATEWAY
         </div>
       `;
-
-      $('manualCheckStatusBtn')?.addEventListener('click', async () => {
-        const btn = $('manualCheckStatusBtn');
-        if (btn) {
-          btn.disabled = true;
-          btn.textContent = 'Mengecek...';
-        }
-        try {
-          const updated = await fetchBookingStatusByCode(kode);
-          if (updated) {
-            state.lastBooking = updated;
-            fillSuccess(updated);
-            if (updated.verificationStatus === 'VERIFIED') {
-              stopStatusPolling();
-              showToast('Pembayaran sudah diverifikasi! Booking sukses.');
-            } else if (updated.verificationStatus === 'REJECTED') {
-              stopStatusPolling();
-              showToast('Pembayaran ditolak oleh pemilik.');
-            } else {
-              showToast('Masih menunggu verifikasi pemilik. Coba cek beberapa saat lagi.');
-            }
-          }
-        } catch (err) {
-          showToast(err.message);
-        } finally {
-          if ($('manualCheckStatusBtn')) {
-            $('manualCheckStatusBtn').disabled = false;
-            $('manualCheckStatusBtn').textContent = '🔄 Cek Status Sekarang';
-          }
-        }
-      });
     }
 
     if ($('successPayment')) {
-      $('successPayment').textContent =
-        `${methodLabel} (Ref: ${data.payment.ref}) — Menunggu Verifikasi`;
+      $('successPayment').textContent = `${methodLabel} — Belum Dibayar`;
     }
   }
 
@@ -1411,7 +1522,6 @@ function fillSuccess(data) {
 }
 
 function resetBookingForm() {
-  stopStatusPolling();
   $('bookingForm')?.reset();
   state.selectedPackage = null;
   renderPackages();
@@ -1423,261 +1533,6 @@ function resetBookingForm() {
   }
   setupOperatingHoursUI();
   setMinimumDate();
-}
-
-// ======================================================
-// PANEL VERIFIKASI PEMILIK
-// ======================================================
-
-function getOrCreatePendingSection() {
-  let section = $('pendingVerificationSection');
-  if (section) return section;
-
-  section = document.createElement('div');
-  section.id = 'pendingVerificationSection';
-  section.style.cssText = `
-    background: #ffffff;
-    border: 1px solid #e8e2d9;
-    border-radius: 20px;
-    padding: 24px;
-    margin: 24px 0;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.03);
-  `;
-
-  section.innerHTML = `
-    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 16px;">
-      <div>
-        <div style="font-size: 11px; font-weight: 700; letter-spacing: 1px; color: #c25e3e; text-transform: uppercase;">
-          PAYMENT VERIFICATION
-        </div>
-        <h2 style="margin: 4px 0 0; font-size: 20px;">
-          Antrean Verifikasi Pembayaran
-        </h2>
-        <p style="margin: 4px 0 0; font-size: 13px; color: #666;">
-          Cek mutasi rekening/QRIS terlebih dahulu. Klik <strong>Terima</strong> hanya jika dana benar-benar sudah masuk agar tercatat ke Laporan Kas.
-        </p>
-      </div>
-      <span id="pendingCountBadge" style="font-size: 13px; font-weight: 600; color: #b45309; background: #fef3c7; padding: 6px 12px; border-radius: 999px;">
-        0 menunggu
-      </span>
-    </div>
-    <div id="pendingListContainer" style="display: flex; flex-direction: column; gap: 12px;">
-      <div style="color: #777; font-size: 14px;">Memuat antrean verifikasi...</div>
-    </div>
-  `;
-
-  const tableEl = $('reportTableBody')?.closest('table');
-  const tableCard = tableEl?.parentElement?.parentElement;
-  if (tableCard && tableCard.parentElement === pages.report) {
-    pages.report.insertBefore(section, tableCard);
-  } else if (pages.report) {
-    pages.report.appendChild(section);
-  }
-
-  return section;
-}
-
-async function loadPendingVerifications(paidBookingIdSet) {
-  getOrCreatePendingSection();
-  const container = $('pendingListContainer');
-  const badge = $('pendingCountBadge');
-  if (!container || !badge) return;
-
-  try {
-    const endpoint =
-      `penyewaan?` +
-      `select=id_penyewaan,kode_booking,tanggal_reservasi,jam_reservasi,outlet,total_harga,status_booking,catatan,` +
-      `paket(nama_paket,durasi_menit),` +
-      `pelanggan(nama_pelanggan,email,no_hp)` +
-      `&order=id_penyewaan.desc`;
-
-    const rows = (await supabaseRequest(endpoint)) || [];
-
-    const pending = rows.filter((row) => {
-      const alreadyPaid = paidBookingIdSet.has(Number(row.id_penyewaan));
-      const isCancelled =
-        row.status_booking === 'CANCELLED' ||
-        (row.catatan || '').startsWith('[DITOLAK]');
-      return !alreadyPaid && !isCancelled;
-    });
-
-    state.pendingList = pending;
-    badge.textContent = `${pending.length} menunggu`;
-
-    if (!pending.length) {
-      container.innerHTML = `
-        <div style="padding: 16px; border-radius: 12px; background: #f9fafb; color: #666; font-size: 14px; text-align: center;">
-          Tidak ada pembayaran yang menunggu verifikasi. Semua transaksi sudah diproses.
-        </div>
-      `;
-      return;
-    }
-
-    container.innerHTML = pending
-      .map((row) => {
-        const pay = parsePaymentNote(row.catatan);
-        const customer = row.pelanggan || {};
-        const pkg = row.paket || {};
-        const jam = row.jam_reservasi ? row.jam_reservasi.slice(0, 5) : '—';
-
-        return `
-          <div style="border: 1px solid #e5e7eb; border-radius: 14px; padding: 16px; background: #fcfcfb; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 14px;">
-            <div style="flex: 1; min-width: 240px;">
-              <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px;">
-                <strong style="font-size: 15px;">${escapeHtml(row.kode_booking)}</strong>
-                <span style="font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 999px; background: #fef3c7; color: #92400e;">
-                  MENUNGGU VERIFIKASI
-                </span>
-                <span style="font-size: 12px; font-weight: 600; padding: 3px 8px; border-radius: 999px; background: #f3f4f6; color: #111;">
-                  ${escapeHtml(pay.method)}
-                </span>
-              </div>
-              <div style="font-size: 13px; color: #333; margin-bottom: 4px;">
-                <strong>${escapeHtml(customer.nama_pelanggan || '—')}</strong> • ${escapeHtml(pkg.nama_paket || '—')} • ${formatDate(row.tanggal_reservasi)} (${jam} WIB) • ${escapeHtml(row.outlet || '—')}
-              </div>
-              <div style="font-size: 13px; color: #555;">
-                Pengirim: <strong>${escapeHtml(pay.sender)}</strong> &nbsp;|&nbsp;
-                No. Ref: <strong>${escapeHtml(pay.ref)}</strong> &nbsp;|&nbsp;
-                Nominal: <strong style="color: #111;">${formatRupiah(row.total_harga)}</strong>
-              </div>
-            </div>
-
-            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-              <button
-                type="button"
-                data-approve-id="${row.id_penyewaan}"
-                style="padding: 9px 14px; border-radius: 10px; border: none; background: #16a34a; color: #fff; font-weight: 600; font-size: 13px; cursor: pointer;"
-              >
-                ✓ Terima (Uang Masuk)
-              </button>
-              <button
-                type="button"
-                data-reject-id="${row.id_penyewaan}"
-                style="padding: 9px 14px; border-radius: 10px; border: 1px solid #dc2626; background: #fff; color: #dc2626; font-weight: 600; font-size: 13px; cursor: pointer;"
-              >
-                ✕ Tolak
-              </button>
-            </div>
-          </div>
-        `;
-      })
-      .join('');
-
-    container.querySelectorAll('[data-approve-id]').forEach((btn) => {
-      btn.addEventListener('click', () =>
-        approvePayment(Number(btn.dataset.approveId), btn)
-      );
-    });
-
-    container.querySelectorAll('[data-reject-id]').forEach((btn) => {
-      btn.addEventListener('click', () =>
-        rejectPayment(Number(btn.dataset.rejectId), btn)
-      );
-    });
-  } catch (error) {
-    container.innerHTML = `<div style="color: #dc2626; font-size: 13px;">Gagal memuat antrean: ${escapeHtml(error.message)}</div>`;
-  }
-}
-
-async function approvePayment(idPenyewaan, button) {
-  const row = state.pendingList.find(
-    (item) => Number(item.id_penyewaan) === Number(idPenyewaan)
-  );
-  if (!row) return;
-
-  const pay = parsePaymentNote(row.catatan);
-  const ok = window.confirm(
-    `Konfirmasi Verifikasi Pembayaran:\n\n` +
-      `Kode Booking: ${row.kode_booking}\n` +
-      `Metode: ${pay.method}\n` +
-      `Pengirim: ${pay.sender}\n` +
-      `No. Ref: ${pay.ref}\n` +
-      `Nominal: ${formatRupiah(row.total_harga)}\n\n` +
-      `Apakah dana sudah benar-benar masuk dan siap dicatat ke Laporan Penerimaan Kas?`
-  );
-  if (!ok) return;
-
-  button.disabled = true;
-  button.textContent = 'Memproses...';
-
-  try {
-    try {
-      await supabaseRequest('penerimaan_kas', {
-        method: 'POST',
-        body: JSON.stringify({
-          no_bukti: generateReceiptNumber(),
-          id_penyewaan: row.id_penyewaan,
-          metode_pembayaran: pay.method,
-          jumlah_diterima: row.total_harga,
-          keterangan: `Terverifikasi (${pay.sender} | Ref: ${pay.ref})`
-        })
-      });
-    } catch (err) {
-      if (!String(err.message).toLowerCase().includes('duplicate key')) {
-        throw err;
-      }
-    }
-
-    await supabaseRequest(
-      `penyewaan?id_penyewaan=eq.${encodeURIComponent(row.id_penyewaan)}`,
-      {
-        method: 'PATCH',
-        body: JSON.stringify({
-          status_booking: 'BOOKED'
-        })
-      }
-    );
-
-    showToast(`Pembayaran ${row.kode_booking} terverifikasi & masuk Laporan Kas.`);
-    await loadReport();
-  } catch (error) {
-    showToast(`Gagal verifikasi: ${error.message}`);
-    button.disabled = false;
-    button.textContent = '✓ Terima (Uang Masuk)';
-  }
-}
-
-async function rejectPayment(idPenyewaan, button) {
-  const row = state.pendingList.find(
-    (item) => Number(item.id_penyewaan) === Number(idPenyewaan)
-  );
-  if (!row) return;
-
-  const ok = window.confirm(
-    `Tolak pembayaran untuk ${row.kode_booking}?\n\n` +
-      `Booking akan dibatalkan, jadwal akan dibuka kembali, dan transaksi TIDAK dicatat di Laporan Kas.`
-  );
-  if (!ok) return;
-
-  button.disabled = true;
-  button.textContent = 'Membatalkan...';
-
-  try {
-    try {
-      await supabaseRequest(
-        `penyewaan?id_penyewaan=eq.${encodeURIComponent(row.id_penyewaan)}`,
-        {
-          method: 'PATCH',
-          body: JSON.stringify({
-            status_booking: 'CANCELLED',
-            catatan: `[DITOLAK] ${row.catatan || ''}`
-          })
-        }
-      );
-    } catch {
-      await supabaseRequest(
-        `penyewaan?id_penyewaan=eq.${encodeURIComponent(row.id_penyewaan)}`,
-        { method: 'DELETE' }
-      );
-    }
-
-    showToast(`Booking ${row.kode_booking} ditolak & tidak dicatat ke kas.`);
-    await loadReport();
-  } catch (error) {
-    showToast(`Gagal menolak: ${error.message}`);
-    button.disabled = false;
-    button.textContent = '✕ Tolak';
-  }
 }
 
 // ======================================================
@@ -1697,6 +1552,7 @@ async function openOwnerPortal() {
 
 async function loadReport() {
   if ($('reportStatus')) $('reportStatus').textContent = 'Memuat...';
+  setupGatewayStatusBannerOnReport();
 
   try {
     const endpoint =
@@ -1707,11 +1563,6 @@ async function loadReport() {
       `&order=tanggal_bayar.desc`;
 
     const rows = (await supabaseRequest(endpoint)) || [];
-
-    const paidBookingIdSet = new Set(
-      rows.map((item) => Number(item.id_penyewaan)).filter(Boolean)
-    );
-    await loadPendingVerifications(paidBookingIdSet);
 
     const totalCash = rows.reduce(
       (sum, item) => sum + Number(item.jumlah_diterima || 0),
@@ -1747,7 +1598,7 @@ function renderReportTable(rows) {
     body.innerHTML = `
       <tr>
         <td colspan="8" class="empty-table">
-          Belum ada transaksi terverifikasi. Verifikasi pembayaran pada antrean di atas.
+          Belum ada transaksi. Transaksi yang lunas melalui Payment Gateway akan otomatis muncul di sini.
         </td>
       </tr>
     `;
@@ -1768,7 +1619,12 @@ function renderReportTable(rows) {
 
       return `
         <tr>
-          <td><strong>${escapeHtml(row.no_bukti)}</strong></td>
+          <td>
+            <strong>${escapeHtml(row.no_bukti)}</strong>
+            <div style="font-size: 12px; color: #666; margin-top: 2px;">
+              ${escapeHtml(booking.kode_booking || '—')}
+            </div>
+          </td>
           <td>${formatDateTime(row.tanggal_bayar)}</td>
           <td>${escapeHtml(customer.nama_pelanggan || '—')}</td>
           <td>${escapeHtml(pkg.nama_paket || '—')}</td>
